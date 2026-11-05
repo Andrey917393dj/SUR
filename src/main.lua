@@ -2341,88 +2341,215 @@ CreateNote("Heavies fire on the verified StandEvents.Input protocol", "Farm Sett
 -- ── ITEM FARM ─────────────────────────────────────────────────
 CreateMenu("Item Farm")
 
-local ItemFarm = { on = false, legit = false }
+local ItemFarm = {
+    on      = false,
+    mode    = "instant",   -- "instant" | "legit"
+    gen     = 0,           -- bumped on every start/stop, invalidates stale loops
+    grabbed = 0,
+    fails   = {},          -- [Instance] = tick() of last attempt that did nothing
+    _scanAt = 0,
+    _scan   = {},
+}
 
-CreateButton("Instant", "Item Farm", function()
-    ItemFarm.legit = false
-    CreateNotification("Item", "instant mode", { Duration = 3 })
+-- BUGFIX: the old "Instant"/"Legit" buttons only flipped a boolean that the
+-- loop read to pick a sleep time — there was no instant path at all, and no
+-- way to tell which mode was active. Now the mode is real state, echoed back.
+local function itemModeNote()
+    CreateNotification("Item", ItemFarm.mode .. " mode", { Duration = 3 })
+end
+
+CreateButton("Instant (no delay)", "Item Farm", function()
+    ItemFarm.mode = "instant"
+    itemModeNote()
 end)
-CreateButton("Legit", "Item Farm", function()
-    ItemFarm.legit = true
-    CreateNotification("Item", "legit mode", { Duration = 3 })
+
+CreateButton("Legit (human pace)", "Item Farm", function()
+    ItemFarm.mode = "legit"
+    itemModeNote()
 end)
 
 -- Full-world scan: any Tool outside a character/backpack that carries a
 -- ProximityPrompt is grabbable. This is wider than worldTools() (which
 -- only looks at Items / Vfx) and matches what the game actually spawns.
+-- BUGFIX: results are sorted by distance from the player, and the raw
+-- GetDescendants() walk is cached for 0.5s so instant mode does not thrash
+-- the whole workspace tree every 100ms.
 local function scanGrabbable()
+    local now = tick()
+    if now - ItemFarm._scanAt < 0.5 then return ItemFarm._scan end
+    ItemFarm._scanAt = now
+
     local out = {}
     local me = char()
+    local p  = hrp()
+    local from = p and p.Position or Vector3.zero
+
     for _, inst in ipairs(WS:GetDescendants()) do
         if inst:IsA("Tool") then
             local parentOk = true
-            local p = inst.Parent
-            while p and p ~= WS do
-                if p == me or (LP.Backpack and p == LP.Backpack) then parentOk = false break end
-                if p:IsA("Model") and p:FindFirstChildOfClass("Humanoid") and p ~= me then
-                    parentOk = false break
+            local parent = inst.Parent
+            while parent and parent ~= WS do
+                if parent == me or (LP.Backpack and parent == LP.Backpack) then
+                    parentOk = false
+                    break
                 end
-                p = p.Parent
+                if parent:IsA("Model") and parent:FindFirstChildOfClass("Humanoid") and parent ~= me then
+                    parentOk = false
+                    break
+                end
+                parent = parent.Parent
             end
             if parentOk then
                 local part = inst:FindFirstChildWhichIsA("BasePart")
                 local prompt = inst:FindFirstChildWhichIsA("ProximityPrompt", true)
                 if part then
-                    out[#out + 1] = { name = inst.Name, obj = inst, part = part, prompt = prompt }
+                    out[#out + 1] = {
+                        name   = inst.Name,
+                        obj    = inst,
+                        part   = part,
+                        prompt = prompt,
+                        dist   = (part.Position - from).Magnitude,
+                    }
                 end
             end
         end
     end
+
+    table.sort(out, function(a, b) return a.dist < b.dist end)
+    ItemFarm._scan = out
     return out
 end
 
-local function grabViaPrompt(t)
-    if t.prompt and fireproximityprompt then
-        pcall(function() fireproximityprompt(t.prompt) end)
-        return true
+-- BUGFIX: the old grabViaPrompt returned true even when fireproximityprompt
+-- errored inside the pcall, so the fallback branch never ran and the loop
+-- believed every attempt succeeded. It also never held the prompt for its
+-- HoldDuration. Now it reports honestly and tries both paths.
+local function promptTrigger(prompt, holdTime)
+    if not prompt then return false end
+    local fired = false
+
+    if fireproximityprompt then
+        if pcall(fireproximityprompt, prompt) then fired = true end
     end
-    return false
+
+    local began = pcall(function() prompt:InputHoldBegin() end)
+    if began then
+        local hold = holdTime or (tonumber(prompt.HoldDuration) or 0) + 0.06
+        if hold < 0.05 then hold = 0.05 end
+        task.wait(hold)
+        pcall(function() prompt:InputHoldEnd() end)
+        fired = true
+    end
+
+    return fired
+end
+
+local function stillInWorld(t)
+    local o = t and t.obj
+    return o ~= nil and o.Parent ~= nil and o:IsDescendantOf(WS)
+end
+
+-- One attempt on one target. Returns true only if the Tool actually left the
+-- world (= picked up), not just "the call did not throw".
+local function grabTarget(t)
+    if not (t and t.part) or not t.part:IsDescendantOf(WS) then return false end
+    local instant = (ItemFarm.mode == "instant")
+
+    tpToPart(t.part, Vector3.new(0, 2, 0))
+    task.wait(instant and 0.08 or (0.35 + math.random() * 0.4))
+
+    if t.prompt then
+        promptTrigger(t.prompt, instant and nil or (tonumber(t.prompt.HoldDuration) or 0) + 0.2)
+    else
+        -- no prompt on the tool itself: stand on it, the game may use Touched
+        task.wait(instant and 0.12 or 0.4)
+    end
+
+    task.wait(instant and 0.1 or 0.3)
+    return not stillInWorld(t)
 end
 
 CreateButton("List grabbable items", "Item Farm", function()
+    ItemFarm._scanAt = 0
     local g = scanGrabbable()
     print("[Grabbable] " .. #g)
-    for _, t in ipairs(g) do print("  " .. t.name) end
+    for _, t in ipairs(g) do
+        print(string.format("  %-28s %5.1f studs%s", t.name, t.dist, t.prompt and "  [prompt]" or ""))
+    end
     CreateNotification("Item", #g .. " grabbable", { Duration = 4 })
 end)
 
+CreateButton("List pickup markers", "Item Farm", function()
+    local s = itemSpawns()
+    print("[Markers] " .. #s)
+    for i, m in ipairs(s) do
+        print(string.format("  #%d  %s  prompt=%s", i, tostring(m.part and m.part:GetFullName()),
+            tostring(m.prompt ~= nil)))
+    end
+    CreateNotification("Item", #s .. " markers", { Duration = 4 })
+end)
+
+-- BUGFIX: toggling off and back on while the old loop was asleep left TWO
+-- loops running (both saw ItemFarm.on == true). Every start now bumps a
+-- generation counter and the loop exits the moment it no longer matches.
 CreateToggle("Start Farming", "Item Farm", function()
     ItemFarm.on = not ItemFarm.on
-    if not ItemFarm.on then return end
+
+    if not ItemFarm.on then
+        ItemFarm.gen = ItemFarm.gen + 1
+        CreateNotification("Item", "stopped - " .. ItemFarm.grabbed .. " picked", { Duration = 4 })
+        return
+    end
+
+    ItemFarm.gen = ItemFarm.gen + 1
+    local myGen = ItemFarm.gen
+    ItemFarm.grabbed = 0
+    ItemFarm.fails = {}
+    ItemFarm._scanAt = 0
+
     task.spawn(function()
         local cycle = 0
-        while ItemFarm.on do
+        while ItemFarm.on and ItemFarm.gen == myGen do
+            local instant = (ItemFarm.mode == "instant")
             local g = scanGrabbable()
-            local t = g[1] or worldTools()[1]
-            if t and t.part then
-                tpToPart(t.part, Vector3.new(0, 2, 0))
-                task.wait(0.25)
-                if not grabViaPrompt(t) then
-                    -- no prompt: hop onto the spawn marker so the pickup triggers
-                    local s = itemSpawns()
-                    if #s > 0 then
-                        cycle = cycle % #s + 1
-                        if s[cycle].part then tpToPart(s[cycle].part, Vector3.new(0, 3, 0)) end
+
+            if #g > 0 then
+                local budget = instant and math.min(#g, 4) or 1
+                local picked = 0
+                for i = 1, budget do
+                    if not (ItemFarm.on and ItemFarm.gen == myGen) then break end
+                    local cand = g[i]
+                    local blockedAt = ItemFarm.fails[cand.obj]
+                    if not (blockedAt and (tick() - blockedAt) < 5) then
+                        if grabTarget(cand) then
+                            ItemFarm.grabbed = ItemFarm.grabbed + 1
+                            picked = picked + 1
+                            ItemFarm.fails[cand.obj] = nil
+                        else
+                            ItemFarm.fails[cand.obj] = tick()
+                        end
                     end
                 end
+                if picked == 0 then
+                    task.wait(instant and 0.15 or 1.0)
+                end
             else
+                -- nothing spawned: walk the static "Pick Up?" markers in turn
                 local s = itemSpawns()
                 if #s > 0 then
                     cycle = cycle % #s + 1
-                    if s[cycle].part then tpToPart(s[cycle].part, Vector3.new(0, 3, 0)) end
+                    local m = s[cycle]
+                    if m and m.part and m.part:IsDescendantOf(WS) then
+                        tpToPart(m.part, Vector3.new(0, 2, 0))
+                        task.wait(instant and 0.12 or 0.5)
+                        promptTrigger(m.prompt, instant and nil or 0.7)
+                        task.wait(instant and 0.12 or 0.4)
+                    end
                 end
+                task.wait(instant and 0.2 or 1.2)
             end
-            task.wait(ItemFarm.legit and 2.5 or 0.6)
+
+            task.wait(instant and 0.1 or (2.2 + math.random() * 1.5))
         end
     end)
 end)
