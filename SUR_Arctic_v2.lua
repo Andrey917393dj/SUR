@@ -701,7 +701,8 @@ function CreateNotification(Title, Text, Options)
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- ARCTIC SUR v2  —  rebuilt against the live game (place 8540168650)
+-- ARCTIC SUR v2
+-- Game : STAND UPRIGHT REBOOTED  (place 8540168650)
 -- Every remote call in this file was verified in-game, not guessed.
 -- ═══════════════════════════════════════════════════════════════
 
@@ -1433,7 +1434,7 @@ Start("Arctic SUR v2")
 
 -- ── HOME ──────────────────────────────────────────────────────
 CreateMenu("Home")
-CreateNote("Rebuilt for place 8540168650", "Home")
+CreateNote("STAND UPRIGHT REBOOTED - place 8540168650", "Home")
 CreateNote("Combat uses StandEvents.Input (verified)", "Home")
 CreateButton("Print Player Snapshot", "Home", function()
     print("Stand:", standName(), "| Attri:", standAttri(),
