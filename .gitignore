@@ -1,0 +1,10 @@
+# ignored
+__pycache__/
+*.pyc
+*.tmp
+sur_res.json
+sur_cmd.json
+sur_beat.json
+sur_out_*.json
+sur_bc_*.b64
+sur_src_*.lua
