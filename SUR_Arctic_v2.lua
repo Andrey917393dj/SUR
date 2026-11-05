@@ -121,6 +121,9 @@ function Start(A, B)
     Handler.Position = UDim2.new(0, 0, 0.0243902449, 0)
     Handler.Size = UDim2.new(0, 149, 0, 240)
     Handler.ScrollBarThickness = 0
+    Handler.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    Handler.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Handler.ScrollBarThickness = 4
 
     UIListLayout.Parent = Handler
     UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
@@ -1177,23 +1180,107 @@ local function standPretty(code)
 end
 
 local function attriCatalog()
-    local out = {}
-    -- some builds ship the ladder as a folder of StringValues / a ModuleScript table
-    for _, holderName in ipairs({ "AttriList", "Attributes", "AttriNames", "RarityList" }) do
-        local h = rs():FindFirstChild(holderName)
-        if h then
-            for _, c in ipairs(h:GetChildren()) do
-                if c:IsA("StringValue") or c:IsA("Folder") then
-                    out[#out + 1] = c.Name
+    local out, seen = {}, {}
+
+    -- 1. the in-world chances board lists every attribute the game knows
+    local ok = pcall(function()
+        local board = WS.Map.ChancesBoards.AttributeChances.newSurface.ScrollFrame
+        for _, v in ipairs(board:GetChildren()) do
+            if v:IsA("TextLabel") then
+                local name = string.split(v.Text, " ")[1]
+                if name == "Glass" then name = "Glass Cannon" end
+                if name and name ~= "" and not seen[name] then
+                    seen[name] = true
+                    out[#out + 1] = name
+                end
+            end
+        end
+    end)
+
+    -- 2. any folder of StringValues the build might ship
+    if #out == 0 then
+        for _, holderName in ipairs({ "AttriList", "Attributes", "AttriNames", "RarityList" }) do
+            local h = rs():FindFirstChild(holderName)
+            if h then
+                for _, c in ipairs(h:GetChildren()) do
+                    if (c:IsA("StringValue") or c:IsA("Folder")) and not seen[c.Name] then
+                        seen[c.Name] = true
+                        out[#out + 1] = c.Name
+                    end
                 end
             end
         end
     end
+
+    -- 3. last resort so the UI is never empty
     if #out == 0 then
         out = { "None", "Weak", "Normal", "Good", "Great", "Excellent",
                 "Perfect", "Legendary", "Mythical", "Godly", "Divine" }
     end
+    table.sort(out)
     return out
+end
+
+-- ── the stats panel on the left of the screen ──────────────────
+-- It is built from the same Data values /check reads, but it is a plain
+-- tree of TextLabels, so we can also rewrite the labels themselves. That
+-- keeps the panel honest even when a value is not backed by a Value object.
+local HUD = { saved = {}, orig = {} }
+
+local function hudStats()
+    local ok, frame = pcall(function()
+        return LP.PlayerGui.PlayerGUI.ingame.Stats
+    end)
+    if ok and frame then return frame end
+    return nil
+end
+
+local function hudLabels()
+    local out = {}
+    local f = hudStats()
+    if not f then return out end
+    for _, d in ipairs(f:GetDescendants()) do
+        if d:IsA("TextLabel") then out[#out + 1] = d end
+    end
+    return out
+end
+
+local function hudSnapshot()
+    HUD.saved, HUD.orig = {}, {}
+    for _, l in ipairs(hudLabels()) do
+        HUD.saved[l] = l.Text
+        HUD.orig[l] = l.Text
+    end
+end
+
+local function hudApply()
+    if not next(HUD.saved) then return end
+    local st = statsFolder()
+    local db = char() and char():FindFirstChild("DmgBoostAttri")
+    local dmg = st and st:FindFirstChild("AttackDmg") and st.AttackDmg.Value or 0
+    local realDmg = math.floor(dmg * (db and db.Value or 1))
+
+    local map = {}
+    if Fake.stand and HUD.realStand then map[HUD.realStand] = standPretty(Fake.stand) end
+    if Fake.attri and HUD.realAttri then map[HUD.realAttri] = Fake.attri end
+    if Fake.health and HUD.realHealth then map[tostring(HUD.realHealth)] = tostring(Fake.health) end
+    if Fake.dmg and HUD.realDmg then map[tostring(HUD.realDmg)] = tostring(Fake.dmg) end
+
+    for label, original in pairs(HUD.saved) do
+        if label.Parent then
+            local want = map[original]
+            if want and label.Text ~= want then
+                pcall(function() label.Text = want end)
+            end
+        end
+    end
+end
+
+local function hudRestore()
+    for label, original in pairs(HUD.saved) do
+        if label.Parent then pcall(function() label.Text = original end) end
+    end
+    HUD.saved, HUD.orig = {}, {}
 end
 
 -- ── write / restore ────────────────────────────────────────────
@@ -1205,6 +1292,38 @@ end
 local function statsFolder()
     local c = char()
     return c and c:FindFirstChild("Stats")
+end
+
+-- The HUD panel (same one /check mirrors) shows the PRETTY stand name.
+local function standGuiName()
+    local ok, text = pcall(function()
+        return LP.PlayerGui.PlayerGUI.ingame.Stats.StandName.Name_.TextLabel.Text
+    end)
+    if not ok or text == nil or text == "" then return "None" end
+    return text
+end
+
+-- Rows of pick buttons in a dedicated menu. One click = one value, no typing.
+local PICKERS = {}
+local function makePicker(menuName, entries, onPick)
+    if PICKERS[menuName] then
+        -- already built: just point the existing buttons at the new callback
+        PICKERS[menuName].onPick = onPick
+        return PICKERS[menuName].count
+    end
+    CreateMenu(menuName)
+    local box = { onPick = onPick, count = 0, items = {} }
+    PICKERS[menuName] = box
+    for _, e in ipairs(entries) do
+        if box.count >= 400 then break end
+        box.count = box.count + 1
+        box.items[#box.items + 1] = e
+        CreateButton(tostring(e), menuName, function()
+            box.onPick(e)
+        end)
+    end
+    if box.count == 0 then CreateNote("empty", menuName) end
+    return box.count
 end
 
 local function fakeApply()
@@ -1237,6 +1356,14 @@ local function fakeSnapshot()
                 and char().DmgBoostAttri.Value,
         health = hum() and hum().MaxHealth,
     }
+
+    -- the HUD labels as they are right now: this is what has to be rewritten
+    HUD.realStand  = standGuiName()
+    HUD.realAttri  = Fake.saved.attri
+    HUD.realHealth = Fake.saved.health
+    local db = char() and char():FindFirstChild("DmgBoostAttri")
+    HUD.realDmg    = math.floor((Fake.saved.dmg or 0) * (db and db.Value or 1))
+    hudSnapshot()
 end
 
 local function fakeRestore()
@@ -1342,6 +1469,7 @@ local function fakeStart()
     Fake.thread = task.spawn(function()
         while Fake.active do
             pcall(fakeApply)
+            pcall(hudApply)
             pcall(fakeStandTrack)
             task.wait(0.2)
         end
@@ -1352,6 +1480,7 @@ local function fakeStop()
     Fake.active = false
     Fake.thread = nil
     fakeStandClear()
+    pcall(hudRestore)
     pcall(fakeRestore)
 end
 
@@ -1367,6 +1496,7 @@ local Farm = {
     useMoves = true, pauseOn = false, pauseLen = 0.4,
     heavyEvery = 1.0, _lastHeavy = 0,
     heavyKeys = { "E", "R", "T" },
+    instaKill = false,
     kills = 0, startedAt = 0,
 }
 
@@ -1380,6 +1510,18 @@ local function farmStop()
     Farm.thread = nil
 end
 
+-- Local write of Humanoid.Health. Works only where the server does not
+-- replicate health down to clients; wrapped so a rejection just falls
+-- through to the normal M1 loop.
+local function instaKill(model)
+    if not model then return false end
+    local h = model:FindFirstChildOfClass("Humanoid")
+    if not h then return false end
+    if h.Health <= 0 then return true end
+    local ok = pcall(function() h.Health = 0 end)
+    return ok and h.Health <= 0
+end
+
 local function farmStep(name)
     local t = farmLiving(name)
     if not t then return false end
@@ -1387,15 +1529,25 @@ local function farmStep(name)
     local r = hrp()
     if not (thp and r) then return false end
 
-    local off = Farm.underneath
-        and CFrame.new(0, -Farm.distance, Farm.distance)
-        or CFrame.new(0, 0, Farm.distance)
-    pcall(function() r.CFrame = thp.CFrame * off end)
+    -- face the target: M1 and the stand only land when the camera looks at it
+    local pos = Farm.underneath
+        and (thp.Position + Vector3.new(0, -Farm.distance, Farm.distance))
+        or  (thp.Position + Vector3.new(0, 0, Farm.distance))
+    pcall(function() r.CFrame = CFrame.lookAt(pos, thp.Position) end)
     pcall(function() r.AssemblyLinearVelocity = Vector3.zero end)
 
     -- keep the stand out
     local aura = char() and char():FindFirstChild("Aura")
     if aura and aura.Value == false then press(Enum.KeyCode.Q) end
+    local stand = char() and char():FindFirstChild("Stand")
+    if stand and stand:FindFirstChild("HumanoidRootPart") then
+        pcall(function() stand.HumanoidRootPart.CFrame = r.CFrame end)
+    end
+
+    if Farm.instaKill and instaKill(t) then
+        Farm.kills = Farm.kills + 1
+        return true
+    end
 
     press(Enum.UserInputType.MouseButton1)
 
@@ -1419,13 +1571,32 @@ local function farmStart(name)
     Farm.startedAt = os.clock()
     Farm.kills = 0
     Farm.thread = task.spawn(function()
+        -- wait for the target to exist before spinning
+        repeat task.wait(0.25) until not Farm.running or farmLiving(name)
         while Farm.running do
             local ok = pcall(farmStep, name)
             if not ok then farmStop() break end
-            task.wait(Farm.pauseOn and Farm.pauseLen or 0.1)
+            task.wait(Farm.pauseOn and Farm.pauseLen or 0.05)
         end
     end)
 end
+
+-- ── live target discovery (no typing) ─────────────────────────
+local function livingTargets()
+    local out = {}
+    local living = WS:FindFirstChild("Living")
+    if not living then return out end
+    for _, m in ipairs(living:GetChildren()) do
+        if m:IsA("Model") and m ~= char()
+           and m:FindFirstChildOfClass("Humanoid")
+           and m:FindFirstChild("HumanoidRootPart") then
+            out[#out + 1] = m.Name
+        end
+    end
+    table.sort(out)
+    return out
+end
+
 
 -- ═══════════════════════════════════════════════════════════════
 -- UI
@@ -1659,6 +1830,57 @@ CreateToggle("Auto Sell Ketchup", "Shop", function()
         end)
     end
 end)
+
+-- ── Stock Market (SM_Event) ───────────────────────────────────
+-- The market sells through a single remote with (action, item, amount),
+-- so the whole catalogue is a list, not a text box.
+local SM = { amount = 1 }
+local SM_ITEMS = {
+    "Stand Arrow", "Charged Arrow", "Requiem Arrow",
+    "Rokakaka", "New Rokakaka", "Dio's Diary", "Kars Mask",
+}
+
+CreateTextBox("Market amount", "Shop", { CustomText = "1" }, function(t)
+    SM.amount = tonumber(t) or SM.amount
+end)
+
+local function smBuy(item)
+    local ev = rs():FindFirstChild("Events")
+    local sm = ev and ev:FindFirstChild("SM_Event")
+    if not sm then
+        CreateNotification("Shop", "no SM_Event", { Duration = 4 })
+        return false
+    end
+    local r, c = hrp(), char()
+    local saved = r and r.CFrame
+    pcall(function()
+        local npc = npcObj("StockMarket")
+        local head = npc and (npc:FindFirstChild("Head") or npc:FindFirstChild("HumanoidRootPart"))
+        if head and r then r.CFrame = head.CFrame * CFrame.new(0, 3, 0) end
+    end)
+    task.wait(0.4)
+    pcall(function() sm:FireServer("Buy", item, SM.amount) end)
+    task.wait(0.5)
+    -- the market opens a prompt; fire it if the executor exposes the helper
+    pcall(function()
+        local npc = npcObj("StockMarket")
+        local pr = npc and npc:FindFirstChild("TalkToPrompt", true)
+        if pr and fireproximityprompt then fireproximityprompt(pr) end
+    end)
+    task.wait(0.3)
+    if saved then pcall(function() r.CFrame = saved end) end
+    CreateNotification("Shop", "bought " .. item .. " x" .. SM.amount, { Duration = 4 })
+    return true
+end
+
+for _, item in ipairs(SM_ITEMS) do
+    CreateButton("Market: " .. item, "Shop", function() smBuy(item) end)
+end
+
+CreateButton("Market: pick any item", "Shop", function()
+    makePicker("Shop: Market items", SM_ITEMS, smBuy)
+end)
+
 
 -- ── STAND ─────────────────────────────────────────────────────
 CreateMenu("Stand")
@@ -1940,6 +2162,25 @@ for _, L in ipairs(LANDMARKS) do
     end)
 end
 
+-- NPC teleports named the way the game names them: the billboard over
+-- each NPC carries Main / Sub text, so the button reads like the world does.
+CreateNote("NPCs", "Teleports")
+for _, m in ipairs((function()
+    local f = npcFolder()
+    return f and f:GetChildren() or {}
+end)()) do
+    local head = m:FindFirstChild("Head")
+    local main = head and head:FindFirstChild("Main")
+    local sub  = head and head:FindFirstChild("Sub")
+    local a = main and main:FindFirstChild("Text") and main.Text.Text
+    local b = sub and sub:FindFirstChild("Text") and sub.Text.Text
+    local label = a and (a .. (b and (" [" .. b .. "]") or "")) or m.Name
+    CreateButton(label, "Teleports", function()
+        local ok = tpToNPC(m.Name)
+        CreateNotification("TP", ok and label or ("no " .. m.Name), { Duration = 3 })
+    end)
+end
+
 -- ── PLAYER ────────────────────────────────────────────────────
 CreateMenu("Player")
 
@@ -2070,6 +2311,72 @@ CreateButton("Print what /check will show", "Fake", function()
     print("  Stand GUID: " .. tostring(g and g.Value))
 end)
 
+-- ── pickers: no typing, one click per value ───────────────────
+local function pickStand(code, pretty)
+    Fake.stand = code
+    if Fake.active then pcall(fakeApply) end
+    CreateNotification("Fake", pretty or standPretty(code), { Duration = 4 })
+end
+
+local function pickAttri(name)
+    Fake.attri = name
+    if Fake.active then pcall(fakeApply) end
+    CreateNotification("Fake", "attri: " .. name, { Duration = 4 })
+end
+
+local standEntries = {}
+for _, e in ipairs(standCatalog()) do
+    standEntries[#standEntries + 1] = { code = e.code, pretty = e.pretty }
+end
+
+CreateButton("Open stand list", "Fake", function()
+    makePicker("Fake: Stands", (function()
+        local names = {}
+        for _, e in ipairs(standEntries) do
+            names[#names + 1] = e.pretty .. "  (" .. e.code .. ")"
+        end
+        return names
+    end)(), function(label)
+        for _, e in ipairs(standEntries) do
+            if label == (e.pretty .. "  (" .. e.code .. ")") then
+                pickStand(e.code, e.pretty)
+                return
+            end
+        end
+    end)
+    CreateNotification("Fake", #standEntries .. " stands listed", { Duration = 4 })
+end)
+
+CreateButton("Open attribute list", "Fake", function()
+    local attrs = attriCatalog()
+    makePicker("Fake: Attributes", attrs, pickAttri)
+    CreateNotification("Fake", #attrs .. " attributes listed", { Duration = 4 })
+end)
+
+CreateButton("Open stand model list", "Fake", function()
+    local codes = {}
+    for _, e in ipairs(standEntries) do codes[#codes + 1] = e.code end
+    makePicker("Fake: Models", codes, function(code)
+        local ok, err = fakeStandSpawn(code, 1)
+        CreateNotification("Fake", ok and ("model " .. code) or tostring(err), { Duration = 4 })
+    end)
+end)
+
+CreateButton("Read current from HUD", "Fake", function()
+    print("[HUD] stand = " .. standGuiName())
+    print("[HUD] attri = " .. tostring(dataValue("Attri") and dataValue("Attri").Value))
+    CreateNotification("Fake", "HUD: " .. standGuiName(), { Duration = 4 })
+end)
+
+-- prefill from the live game so nothing has to be typed on first run
+pcall(function()
+    local s = dataValue("Stand")
+    local a = dataValue("Attri")
+    if s then Fake.stand = s.Value end
+    if a then Fake.attri = a.Value end
+end)
+
+
 -- ── BOSS FARM ─────────────────────────────────────────────────
 CreateMenu("Boss Farm")
 CreateNote("Glues you to the target and drives M1 + heavies", "Boss Farm")
@@ -2092,10 +2399,32 @@ CreateButton("Stop All Farms", "Boss Farm", function()
     CreateNotification("Farm", "stopped", { Duration = 3 })
 end)
 
-for _, boss in ipairs({
+CreateToggle("Insta-Kill (local HP write)", "Boss Farm", function()
+    Farm.instaKill = not Farm.instaKill
+    CreateNotification("Farm", "insta-kill " .. (Farm.instaKill and "on" or "off"), { Duration = 3 })
+end)
+
+-- one click per live target: the list is scanned from Workspace.Living,
+-- so nothing is typed and nothing can be misspelled
+CreateButton("Scan live targets", "Boss Farm", function()
+    local names = livingTargets()
+    makePicker("Boss: Live targets", names, function(name)
+        if Farm.running and Farm.target == name then
+            farmStop()
+            CreateNotification("Farm", "off " .. name, { Duration = 3 })
+        else
+            farmStart(name)
+            CreateNotification("Farm", "on " .. name, { Duration = 3 })
+        end
+    end)
+    CreateNotification("Farm", #names .. " live targets", { Duration = 4 })
+end)
+
+local PRESETS = {
     "Jotaro Over Heaven", "JohnnyJoestar", "Alternate Jotaro Part 4",
     "DIO", "Diavolo", "Funny Valentine", "Dio Brando", "Heaven Ascension DIO",
-}) do
+}
+for _, boss in ipairs(PRESETS) do
     CreateToggle("Farm: " .. boss, "Boss Farm", function()
         if Farm.running and Farm.target == boss then
             farmStop()
@@ -2123,8 +2452,13 @@ CreateNote("Fires Done / QuestDone on a chosen NPC on a loop", "Quest Farm")
 
 local QuestFarm = { npc = "MerchantAU", running = false, which = "QuestDone", gap = 1.0 }
 
-CreateTextBox("Quest NPC", "Quest Farm", { CustomText = "MerchantAU" }, function(t)
-    if t and t ~= "" then QuestFarm.npc = t end
+CreateButton("Pick quest NPC", "Quest Farm", function()
+    local npcs = allNPCs()
+    makePicker("Quest: NPC list", npcs, function(name)
+        QuestFarm.npc = name
+        CreateNotification("Quest", "npc: " .. name, { Duration = 4 })
+    end)
+    CreateNotification("Quest", #npcs .. " NPCs", { Duration = 4 })
 end)
 CreateTextBox("Loop gap (s)", "Quest Farm", { CustomText = "1.0" }, function(t)
     QuestFarm.gap = tonumber(t) or QuestFarm.gap
@@ -2159,14 +2493,93 @@ end)
 CreateMenu("Lair Farm")
 CreateNote("Boss loop with a pause between packs", "Lair Farm")
 
-CreateTextBox("Lair target", "Lair Farm", { CustomText = "Lair boss name" }, function(t)
-    if t and t ~= "" then Farm.target = t end
+-- lair NPC sits right next to the player; pick it from what is in range
+local Lair = { npc = nil, npcLabel = "none" }
+
+local function nearestNPC(maxDist)
+    maxDist = maxDist or 20
+    local r = hrp()
+    local best, bestD = nil, maxDist
+    local f = npcFolder()
+    if not (f and r) then return nil end
+    for _, m in ipairs(f:GetChildren()) do
+        local p = m:FindFirstChild("HumanoidRootPart")
+        if p then
+            local d = (p.Position - r.Position).Magnitude
+            if d < bestD then best, bestD = m, d end
+        end
+    end
+    return best
+end
+
+local function npcPrettyLabel(m)
+    if not m then return "none" end
+    local head = m:FindFirstChild("Head")
+    local main = head and head:FindFirstChild("Main")
+    local sub  = head and head:FindFirstChild("Sub")
+    local a = main and main:FindFirstChild("Text") and main.Text.Text
+    local b = sub and sub:FindFirstChild("Text") and sub.Text.Text
+    if a and b then return a .. " [" .. b .. "]" end
+    return a or m.Name
+end
+
+CreateButton("Select lair NPC (nearest)", "Lair Farm", function()
+    local m = nearestNPC(25)
+    if not m then
+        CreateNotification("Lair", "no NPC within 25 studs", { Duration = 4 })
+        return
+    end
+    Lair.npc = m.Name
+    Lair.npcLabel = npcPrettyLabel(m)
+    CreateNotification("Lair", "picked " .. Lair.npcLabel, { Duration = 4 })
 end)
+
+CreateButton("Pick lair NPC from list", "Lair Farm", function()
+    local npcs = allNPCs()
+    makePicker("Lair: NPC list", npcs, function(name)
+        Lair.npc = name
+        Lair.npcLabel = npcPrettyLabel(npcObj(name))
+        CreateNotification("Lair", "picked " .. Lair.npcLabel, { Duration = 4 })
+    end)
+end)
+
 CreateTextBox("Pause length (s)", "Lair Farm", { CustomText = "0.4" }, function(t)
     Farm.pauseLen = tonumber(t) or Farm.pauseLen
 end)
 CreateToggle("Use pausing", "Lair Farm", function()
     Farm.pauseOn = not Farm.pauseOn
+end)
+CreateToggle("Insta-Kill (local HP write)", "Lair Farm", function()
+    Farm.instaKill = not Farm.instaKill
+end)
+
+-- lair bosses are the models that carry a Dungeon marker in their name
+local function lairBosses()
+    local out = {}
+    local living = WS:FindFirstChild("Living")
+    if not living then return out end
+    for _, m in ipairs(living:GetChildren()) do
+        if m:IsA("Model") then
+            local n = m.Name
+            if n == "Boss" or string.find(n, "Dungeon", 1, true)
+               or string.find(n, "%[Dungeon%]") then
+                out[#out + 1] = n
+            end
+        end
+    end
+    return out
+end
+
+CreateButton("Scan lair bosses", "Lair Farm", function()
+    local b = lairBosses()
+    if #b == 0 then
+        CreateNotification("Lair", "no lair boss in Living", { Duration = 4 })
+        return
+    end
+    makePicker("Lair: Bosses", b, function(name)
+        farmStart(name)
+        CreateNotification("Lair", "on " .. name, { Duration = 3 })
+    end)
 end)
 CreateToggle("Begin Lair Farm", "Lair Farm", function()
     if Farm.running then
@@ -2274,15 +2687,69 @@ CreateButton("Legit", "Item Farm", function()
     CreateNotification("Item", "legit mode", { Duration = 3 })
 end)
 
+-- Full-world scan: any Tool outside a character/backpack that carries a
+-- ProximityPrompt is grabbable. This is wider than worldTools() (which
+-- only looks at Items / Vfx) and matches what the game actually spawns.
+local function scanGrabbable()
+    local out = {}
+    local me = char()
+    for _, inst in ipairs(WS:GetDescendants()) do
+        if inst:IsA("Tool") then
+            local parentOk = true
+            local p = inst.Parent
+            while p and p ~= WS do
+                if p == me or (LP.Backpack and p == LP.Backpack) then parentOk = false break end
+                if p:IsA("Model") and p:FindFirstChildOfClass("Humanoid") and p ~= me then
+                    parentOk = false break
+                end
+                p = p.Parent
+            end
+            if parentOk then
+                local part = inst:FindFirstChildWhichIsA("BasePart")
+                local prompt = inst:FindFirstChildWhichIsA("ProximityPrompt", true)
+                if part then
+                    out[#out + 1] = { name = inst.Name, obj = inst, part = part, prompt = prompt }
+                end
+            end
+        end
+    end
+    return out
+end
+
+local function grabViaPrompt(t)
+    if t.prompt and fireproximityprompt then
+        pcall(function() fireproximityprompt(t.prompt) end)
+        return true
+    end
+    return false
+end
+
+CreateButton("List grabbable items", "Item Farm", function()
+    local g = scanGrabbable()
+    print("[Grabbable] " .. #g)
+    for _, t in ipairs(g) do print("  " .. t.name) end
+    CreateNotification("Item", #g .. " grabbable", { Duration = 4 })
+end)
+
 CreateToggle("Start Farming", "Item Farm", function()
     ItemFarm.on = not ItemFarm.on
     if not ItemFarm.on then return end
     task.spawn(function()
         local cycle = 0
         while ItemFarm.on do
-            local t = worldTools()
-            if #t > 0 and t[1].part then
-                tpToPart(t[1].part, Vector3.new(0, 2, 0))
+            local g = scanGrabbable()
+            local t = g[1] or worldTools()[1]
+            if t and t.part then
+                tpToPart(t.part, Vector3.new(0, 2, 0))
+                task.wait(0.25)
+                if not grabViaPrompt(t) then
+                    -- no prompt: hop onto the spawn marker so the pickup triggers
+                    local s = itemSpawns()
+                    if #s > 0 then
+                        cycle = cycle % #s + 1
+                        if s[cycle].part then tpToPart(s[cycle].part, Vector3.new(0, 3, 0)) end
+                    end
+                end
             else
                 local s = itemSpawns()
                 if #s > 0 then
@@ -2381,7 +2848,12 @@ getgenv().ArcticAPI = {
     farmStart      = farmStart,
     farmStop       = farmStop,
     farmStep       = farmStep,
+    livingTargets  = livingTargets,
+    instaKill      = instaKill,
     landmarks      = LANDMARKS,
+    makePicker     = makePicker,
+    standGuiName   = standGuiName,
+    scanGrabbable  = scanGrabbable,
 }
 
 CreateNotification("Arctic SUR v2", "Loaded. Press J to toggle.", { Duration = 6 })

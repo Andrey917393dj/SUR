@@ -30,21 +30,27 @@
 | **Home** | снапшот игрока, запуск полного аудита ×20 |
 | **Combat** | Auto Attack, Auto Barrage, Auto Heavy, все мувы по кнопке |
 | **NPC & Quest** | `Done` / `QuestDone` на любом NPC, на всех сразу, авто-луп |
-| **Shop** | `BuyItem`, скупка кетчупа, Auto Sell Ketchup со счётчиком |
+| **Shop** | скупка кетчупа, Auto Sell, **Stock Market списком** (`SM_Event`) |
 | **Stand** | слоты 1–5, SpecSlot2, тир, стрелы и рокакаки |
 | **Stand Farm** | луп роллов, вайтлисты стендов и атрибутов, авто-покупка, вебхук |
 | **Items** | предметы в мире, точки спавна, авто-подбор, TP к спавнам |
-| **Item Farm** | Instant / Legit / Start |
-| **Teleports** | 14 именованных локаций + 3 Dark Entrance + 41 NPC |
-| **Boss Farm** | 8 пресетов боссов + кастомный таргет |
-| **Quest Farm** | NPC, gap, QuestDone/Done |
-| **Lair Farm** | таргет, паузы, `LairStart` / `LairClear` |
+| **Item Farm** | Instant / Legit / **скан всех грабящихся Tool** + `fireproximityprompt` |
+| **Teleports** | 14 именованных локаций + 3 Dark Entrance + **все NPC по их именам из игры** |
+| **Boss Farm** | 8 пресетов + **Scan live targets** (список из `Workspace.Living`) |
+| **Quest Farm** | **Pick quest NPC** (список 68 NPC), gap, QuestDone/Done |
+| **Lair Farm** | **Select lair NPC (nearest)**, список лейр-боссов, паузы |
 | **Farm Settings** | Refresh Movesets, Use Custom Moves, список тяжёлых клавиш |
 | **Player** | Speed, Jump, Fly (WASD), Noclip |
 | **LocalPlayer** | Open Stand Storage, Anti AFK, Auto Umbrella, Reset |
 | **Visuals** | ESP на игроков/мобов и NPC |
 | **Fake** | фейк-стенд, атрибут, статы, `/check` |
 | **Diagnostics** | проверка ремоутов, персонажа, мира |
+
+> [!TIP]
+> Ничего не нужно печатать руками: стенды, атрибуты, NPC, боссы и предметы
+> берутся списками из самой игры. Текстовые поля остались только там, где
+> значение числовое (дистанция, пауза, сумма).
+
 
 ---
 
@@ -117,8 +123,20 @@ ReplicatedStorage.StandNameConvert[code].Value   -- pretty-имя
 ```
 
 Меню **Fake** подменяет эти пять полей и держит их циклом `0.2s`, чтобы сервер
-не откатил. OFF — восстанавливает снапшот. Кнопка **Print what /check will show**
-печатает точную реконструкцию карточки.
+не откатил. OFF — восстанавливает снапшот.
+
+Список стендов и атрибутов **не надо вводить руками**:
+
+- **Open stand list** — строит меню `Fake: Stands` из `StandNameConvert`,
+  одна кнопка = один стенд.
+- **Open attribute list** — читает доску шансов
+  `Workspace.Map.ChancesBoards.AttributeChances`, одна кнопка = один атрибут.
+- **Open stand model list** — то же, но сразу ставит модель стенда.
+- **Read current from HUD** — печатает то, что показывает панель в игре.
+
+Плюс подмена самих `TextLabel` панели статов (`PlayerGui.PlayerGUI.ingame.Stats`):
+при включении снимается снапшот всех подписей, и те, что показывали реальные
+значения, начинают показывать фейк. При выключении — всё возвращается.
 
 **Fake stand model** клонирует модель стенда из `Workspace.Living.<ник>.Stand`,
 глушит скрипты, якорит парты, ставит рядом с HRP и каждый тик держит через
@@ -127,6 +145,7 @@ ReplicatedStorage.StandNameConvert[code].Value   -- pretty-имя
 > [!NOTE]
 > Подмена локальная: `/check` на своём клиенте показывает фейк, у других
 > игроков остаются серверные значения.
+
 
 ---
 

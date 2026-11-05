@@ -115,6 +115,9 @@ function Start(A, B)
     Handler.Position = UDim2.new(0, 0, 0.0243902449, 0)
     Handler.Size = UDim2.new(0, 149, 0, 240)
     Handler.ScrollBarThickness = 0
+    Handler.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    Handler.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Handler.ScrollBarThickness = 4
 
     UIListLayout.Parent = Handler
     UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center

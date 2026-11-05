@@ -79,6 +79,17 @@ def main():
         else:
             fixed_body.append(l)
 
+    # The sidebar is a ScrollingFrame that never got a canvas size, so any
+    # menu past the ~10th row was unreachable. Make it actually scroll.
+    patched = []
+    for l in fixed_body:
+        patched.append(l)
+        if l.strip() == "Handler.ScrollBarThickness = 0":
+            patched.append("    Handler.AutomaticCanvasSize = Enum.AutomaticSize.Y")
+            patched.append("    Handler.CanvasSize = UDim2.new(0, 0, 0, 0)")
+            patched.append("    Handler.ScrollBarThickness = 4")
+    fixed_body = patched
+
     out = []
     out += head
     out += prelude
