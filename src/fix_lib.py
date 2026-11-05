@@ -57,7 +57,7 @@ def main():
     prelude = [
         "-- ══ module scope: Start() fills these, API functions read them ══",
         "local ScreenGui, Frame, Hotbar, CloseButton, TitleLabel, Buttons, Handler, Menus",
-        "local DefaultColor = Color3.fromRGB(0, 51, 102)",
+        "local DefaultColor = Color3.fromRGB(124, 106, 255)",
         "local TweenServ = game:GetService(\"TweenService\")",
         "local UIS       = game:GetService(\"UserInputService\")",
         "",
@@ -90,13 +90,33 @@ def main():
             patched.append("    Handler.ScrollBarThickness = 4")
     fixed_body = patched
 
+    # ── THEME ──────────────────────────────────────────────────────
+    # The stock lib ships a near-black 2019 look with a navy accent. Swap the
+    # raw palette for the SUR dark theme: violet accent, layered charcoal.
+    # Done at source so every widget the lib creates is born on-theme and the
+    # sidebar's "active menu" colour stays consistent after a click.
+    THEME = {
+        "Color3.fromRGB(0, 51, 102)": "Color3.fromRGB(124, 106, 255)",   # accent
+        "Color3.fromRGB(8, 8, 8)": "Color3.fromRGB(13, 13, 16)",         # frame
+        "Color3.fromRGB(10, 10, 10)": "Color3.fromRGB(16, 16, 20)",      # sidebar
+        "Color3.fromRGB(17, 17, 17)": "Color3.fromRGB(24, 24, 30)",      # rows
+        "Color3.fromRGB(6, 6, 6)": "Color3.fromRGB(10, 10, 13)",         # inputs
+    }
+
+    def retheme(line):
+        for old, new in THEME.items():
+            line = line.replace(old, new)
+        return line
+
+    fixed_body = [retheme(l) for l in fixed_body]
+
     out = []
     out += head
     out += prelude
     out += fixed_body
     out.append("end")
     out.append("")
-    out += dedent(loop_block)
+    out += [retheme(l) for l in dedent(loop_block)]
     out += dedent(api_block)
     out.append("")
 

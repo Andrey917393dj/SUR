@@ -598,6 +598,10 @@ local function standGuiName()
     return text
 end
 
+-- forward declaration: makePicker calls restyle() after it builds a new menu,
+-- and restyle itself is defined further down (it needs the whole tree first).
+local restyle
+
 -- Rows of pick buttons in a dedicated menu. One click = one value, no typing.
 local PICKERS = {}
 local function makePicker(menuName, entries, onPick)
@@ -618,6 +622,7 @@ local function makePicker(menuName, entries, onPick)
         end)
     end
     if box.count == 0 then CreateNote("empty", menuName) end
+    if restyle then pcall(restyle) end
     return box.count
 end
 
@@ -897,6 +902,257 @@ end
 -- UI
 -- ═══════════════════════════════════════════════════════════════
 Start("Arctic SUR v2")
+
+-- ═══════════════════════════════════════════════════════════════
+-- RESTYLE
+-- The stock lib lays out a 2019-sized 501x273 box with 23px rows and
+-- 148px labels, so every control looks cramped and the toggle pills sit
+-- in the middle of the row. This pass re-proportions the whole tree:
+--   720x470 window · 200px sidebar · 36px title bar · 30px rows ·
+--   full-width labels · right-aligned toggles and inputs ·
+--   accent-coloured section headers · ordered sidebar.
+-- It is idempotent and safe to call again after a picker is built.
+-- ═══════════════════════════════════════════════════════════════
+local ACCENT     = Color3.fromRGB(124, 106, 255)
+local ROWBG      = Color3.fromRGB(24, 24, 30)
+local MUTED      = Color3.fromRGB(150, 150, 170)
+local TEXT_MAIN  = Color3.fromRGB(236, 236, 246)
+
+-- most-used first; anything not listed (pickers) lands next to its parent
+local SIDEBAR_ORDER = {
+    ["Home"] = 1, ["Combat"] = 2, ["Boss Farm"] = 3, ["Lair Farm"] = 4,
+    ["Quest Farm"] = 5, ["Stand Farm"] = 6, ["Item Farm"] = 7,
+    ["Farm Settings"] = 8, ["Teleports"] = 9, ["Shop"] = 10, ["Stand"] = 11,
+    ["Items"] = 12, ["Player"] = 13, ["LocalPlayer"] = 14,
+    ["NPC & Quest"] = 15, ["Visuals"] = 16, ["Fake"] = 17,
+    ["Diagnostics"] = 18,
+}
+
+local function uiCorner(obj, radius)
+    local c = obj:FindFirstChildOfClass("UICorner")
+    if not c then c = Instance.new("UICorner"); c.Parent = obj end
+    c.CornerRadius = UDim.new(0, radius)
+end
+
+local function uiPad(obj, l, t, r, b)
+    local p = obj:FindFirstChildOfClass("UIPadding")
+    if not p then p = Instance.new("UIPadding"); p.Parent = obj end
+    p.PaddingLeft   = UDim.new(0, l)
+    p.PaddingTop    = UDim.new(0, t)
+    p.PaddingRight  = UDim.new(0, r)
+    p.PaddingBottom = UDim.new(0, b)
+end
+
+-- one row inside a menu pane: button / toggle / textbox / note
+local function styleRow(item)
+    local isNote = item:IsA("TextLabel")
+    item.BackgroundColor3 = ROWBG
+    item.BackgroundTransparency = isNote and 1 or 0
+    item.AutoButtonColor = not isNote
+
+    local label = item:FindFirstChildOfClass("TextLabel")
+    local box   = item:FindFirstChildOfClass("TextBox")
+    local pill  = nil
+    for _, ch in ipairs(item:GetChildren()) do
+        if ch:IsA("Frame") and not pill then pill = ch end
+    end
+
+    -- ── note: either a small accent section header or muted helper text ──
+    if isNote then
+        item.Size = UDim2.new(1, 0, 0, 20)
+        item.AutomaticSize = Enum.AutomaticSize.Y
+        if label then
+            local txt = tostring(label.Text or "")
+            local isHeader = (#txt > 0) and (#txt <= 34) and (not txt:find("%."))
+            label.Position = UDim2.new(0, 4, 0, 0)
+            label.Size = UDim2.new(1, -8, 0, 18)
+            label.AutomaticSize = Enum.AutomaticSize.Y
+            label.TextScaled = false
+            label.TextWrapped = true
+            label.TextXAlignment = Enum.TextXAlignment.Left
+            label.TextYAlignment = Enum.TextYAlignment.Center
+            if isHeader then
+                label.TextSize = 13
+                label.Font = Enum.Font.GothamBold
+                label.TextColor3 = ACCENT
+            else
+                label.TextSize = 12
+                label.Font = Enum.Font.Gotham
+                label.TextColor3 = MUTED
+            end
+        end
+        return
+    end
+
+    item.Size = UDim2.new(1, 0, 0, 30)
+    uiCorner(item, 6)
+
+    -- ── textbox row: label left, input right ──
+    if box then
+        if label then
+            label.Position = UDim2.new(0, 10, 0, 0)
+            label.Size = UDim2.new(0.52, -14, 1, 0)
+            label.TextSize = 12
+            label.Font = Enum.Font.Gotham
+            label.TextColor3 = TEXT_MAIN
+            label.TextXAlignment = Enum.TextXAlignment.Left
+        end
+        box.Position = UDim2.new(0.55, 0, 0.5, -9)
+        box.Size = UDim2.new(0.45, -12, 0, 18)
+        box.TextSize = 11
+        box.TextWrapped = false
+        box.TextXAlignment = Enum.TextXAlignment.Center
+        box.BackgroundColor3 = Color3.fromRGB(10, 10, 13)
+        uiCorner(box, 5)
+        return
+    end
+
+    -- ── toggle row: label left, pill on the right edge ──
+    if pill then
+        if label then
+            label.Position = UDim2.new(0, 10, 0, 0)
+            label.Size = UDim2.new(1, -76, 1, 0)
+            label.TextSize = 12
+            label.Font = Enum.Font.Gotham
+            label.TextColor3 = TEXT_MAIN
+            label.TextXAlignment = Enum.TextXAlignment.Left
+        end
+        pill.Position = UDim2.new(1, -58, 0.5, -9)
+        pill.Size = UDim2.new(0, 46, 0, 18)
+        uiCorner(pill, 9)
+        return
+    end
+
+    -- ── plain button row ──
+    if label then
+        label.Position = UDim2.new(0, 10, 0, 0)
+        label.Size = UDim2.new(1, -20, 1, 0)
+        label.TextSize = 12
+        label.Font = Enum.Font.Gotham
+        label.TextColor3 = TEXT_MAIN
+        label.TextXAlignment = Enum.TextXAlignment.Left
+    end
+end
+
+local function styleSidebar(handler)
+    handler.Position = UDim2.new(0, 0, 0, 0)
+    handler.Size = UDim2.new(1, 0, 1, 0)
+    handler.CanvasSize = UDim2.new(0, 0, 0, 0)
+    handler.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    handler.ScrollBarThickness = 3
+    handler.ScrollBarImageColor3 = Color3.fromRGB(70, 70, 90)
+    uiPad(handler, 6, 6, 6, 10)
+
+    local layout = handler:FindFirstChildOfClass("UIListLayout")
+    if layout then
+        layout.Padding = UDim.new(0, 3)
+        layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    end
+
+    local extra = 0
+    for _, b in ipairs(handler:GetChildren()) do
+        if b:IsA("TextButton") then
+            b.Size = UDim2.new(1, 0, 0, 30)
+            b.Font = Enum.Font.Gotham
+            b.TextSize = 12
+            b.TextXAlignment = Enum.TextXAlignment.Center
+            uiCorner(b, 6)
+            local base = SIDEBAR_ORDER[b.Text]
+            if base then
+                b.LayoutOrder = base * 10
+            else
+                -- picker menus ("Fake: Stands") sit right under their parent
+                local parentName = tostring(b.Text):match("^(.-):")
+                local pBase = parentName and SIDEBAR_ORDER[parentName]
+                extra = extra + 1
+                b.LayoutOrder = pBase and (pBase * 10 + 5) or (900 + extra)
+            end
+        end
+    end
+end
+
+restyle = function()
+    local ok, err = pcall(function()
+        local gui = getgenv and getgenv().ArcticScreenGui
+        if not gui then return end
+        local frame = gui:FindFirstChildOfClass("Frame")
+        if not frame then return end
+        local hotbar  = frame:FindFirstChild("Hotbar")
+        local buttons = frame:FindFirstChild("Buttons")
+        local menus   = frame:FindFirstChild("Menus")
+        if not (hotbar and buttons and menus) then return end
+        local handler = buttons:FindFirstChild("Handler")
+
+        local W, H, SIDE, BAR = 720, 470, 200, 36
+
+        -- window
+        frame.Size = UDim2.new(0, W, 0, H)
+        frame.Position = UDim2.new(0.5, -W / 2, 0.5, -H / 2)
+        frame.BackgroundColor3 = Color3.fromRGB(13, 13, 16)
+        uiCorner(frame, 8)
+        local stroke = frame:FindFirstChild("SURStroke")
+        if not stroke then
+            stroke = Instance.new("UIStroke")
+            stroke.Name = "SURStroke"
+            stroke.Parent = frame
+        end
+        stroke.Color = Color3.fromRGB(54, 54, 70)
+        stroke.Thickness = 1
+
+        -- title bar
+        hotbar.Size = UDim2.new(1, 0, 0, BAR)
+        hotbar.BackgroundColor3 = Color3.fromRGB(20, 20, 26)
+        uiCorner(hotbar, 8)
+        local title = hotbar:FindFirstChildOfClass("TextLabel")
+        if title then
+            title.Position = UDim2.new(0, 14, 0, 0)
+            title.Size = UDim2.new(1, -60, 1, 0)
+            title.Font = Enum.Font.GothamBold
+            title.TextSize = 14
+            title.TextXAlignment = Enum.TextXAlignment.Left
+            title.TextColor3 = Color3.fromRGB(242, 242, 250)
+        end
+        local close = hotbar:FindFirstChildOfClass("ImageButton")
+        if close then
+            close.Position = UDim2.new(1, -32, 0, 8)
+            close.Size = UDim2.new(0, 20, 0, 20)
+        end
+
+        -- sidebar
+        buttons.Position = UDim2.new(0, 0, 0, BAR)
+        buttons.Size = UDim2.new(0, SIDE, 1, -BAR)
+        buttons.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
+        uiCorner(buttons, 8)
+        if handler then styleSidebar(handler) end
+
+        -- content area
+        menus.Position = UDim2.new(0, SIDE, 0, BAR)
+        menus.Size = UDim2.new(1, -SIDE, 1, -BAR)
+
+        for _, pane in ipairs(menus:GetChildren()) do
+            if pane:IsA("ScrollingFrame") then
+                pane.Position = UDim2.new(0, 0, 0, 0)
+                pane.Size = UDim2.new(1, 0, 1, 0)
+                pane.CanvasSize = UDim2.new(0, 0, 0, 0)
+                pane.AutomaticCanvasSize = Enum.AutomaticSize.Y
+                pane.ScrollBarThickness = 3
+                pane.ScrollBarImageColor3 = Color3.fromRGB(70, 70, 90)
+                uiPad(pane, 10, 8, 10, 14)
+                local lay = pane:FindFirstChildOfClass("UIListLayout")
+                if lay then
+                    lay.Padding = UDim.new(0, 3)
+                    lay.HorizontalAlignment = Enum.HorizontalAlignment.Center
+                end
+                for _, item in ipairs(pane:GetChildren()) do
+                    if item:IsA("TextButton") or item:IsA("TextLabel") then
+                        pcall(styleRow, item)
+                    end
+                end
+            end
+        end
+    end)
+    if not ok then warn("[SUR restyle] " .. tostring(err)) end
+end
 
 -- ── HOME ──────────────────────────────────────────────────────
 CreateMenu("Home")
@@ -1786,10 +2042,19 @@ end)
 
 -- ── LAIR FARM ─────────────────────────────────────────────────
 CreateMenu("Lair Farm")
-CreateNote("Boss loop with a pause between packs", "Lair Farm")
 
--- lair NPC sits right next to the player; pick it from what is in range
-local Lair = { npc = nil, npcLabel = "none" }
+local Lair = {
+    on = false, thread = nil,
+    npc = nil, boss = nil,
+    distance = 4, pause = 0.4, range = 40,
+    status = "idle", _lastFire = -10,
+}
+
+local function lairStatus(text)
+    Lair.status = text
+    pcall(EditString, "Status: " .. tostring(Lair.lastStatus or "idle"), "Status: " .. text)
+    Lair.lastStatus = text
+end
 
 local function nearestNPC(maxDist)
     maxDist = maxDist or 20
@@ -1804,7 +2069,7 @@ local function nearestNPC(maxDist)
             if d < bestD then best, bestD = m, d end
         end
     end
-    return best
+    return best, bestD
 end
 
 local function npcPrettyLabel(m)
@@ -1818,76 +2083,181 @@ local function npcPrettyLabel(m)
     return a or m.Name
 end
 
-CreateButton("Select lair NPC (nearest)", "Lair Farm", function()
-    local m = nearestNPC(25)
-    if not m then
-        CreateNotification("Lair", "no NPC within 25 studs", { Duration = 4 })
-        return
+-- lair bosses carry a Dungeon marker; fall back to any hostile model
+local function nearestLairBoss()
+    local living = WS:FindFirstChild("Living")
+    local r = hrp()
+    if not (living and r) then return nil end
+    local best, bestD = nil, math.huge
+    for _, m in ipairs(living:GetChildren()) do
+        if m:IsA("Model") and m ~= char() then
+            local h = m:FindFirstChildOfClass("Humanoid")
+            local p = m:FindFirstChild("HumanoidRootPart")
+            if h and p and h.Health > 0 then
+                local n = m.Name
+                local isLair = (n == "Boss")
+                    or string.find(n, "Dungeon", 1, true)
+                    or string.find(n, "%[Dungeon%]") ~= nil
+                if isLair then
+                    local d = (p.Position - r.Position).Magnitude
+                    if d < bestD then best, bestD = m, d end
+                end
+            end
+        end
     end
-    Lair.npc = m.Name
-    Lair.npcLabel = npcPrettyLabel(m)
-    CreateNotification("Lair", "picked " .. Lair.npcLabel, { Duration = 4 })
-end)
+    return best
+end
 
-CreateButton("Pick lair NPC from list", "Lair Farm", function()
-    local npcs = allNPCs()
-    makePicker("Lair: NPC list", npcs, function(name)
-        Lair.npc = name
-        Lair.npcLabel = npcPrettyLabel(npcObj(name))
-        CreateNotification("Lair", "picked " .. Lair.npcLabel, { Duration = 4 })
+local function nearestHostile()
+    local living = WS:FindFirstChild("Living")
+    local r = hrp()
+    if not (living and r) then return nil end
+    local best, bestD = nil, math.huge
+    for _, m in ipairs(living:GetChildren()) do
+        if m:IsA("Model") and m ~= char() and m:FindFirstChild("AI") then
+            local h = m:FindFirstChildOfClass("Humanoid")
+            local p = m:FindFirstChild("HumanoidRootPart")
+            if h and p and h.Health > 0 then
+                local d = (p.Position - r.Position).Magnitude
+                if d < bestD then best, bestD = m, d end
+            end
+        end
+    end
+    return best
+end
+
+local function lairStop()
+    Lair.on = false
+    Lair.thread = nil
+    farmStop()
+    lairStatus("stopped")
+end
+
+local function lairStart()
+    if Lair.on then return end
+    Lair.on = true
+    Lair.lastStatus = "idle"
+    Lair.thread = task.spawn(function()
+        while Lair.on do
+            local ok = pcall(function()
+                local boss = nearestLairBoss()
+                if boss then
+                    Lair.boss = boss.Name
+                    Farm.distance = Lair.distance
+                    Farm.pauseOn = true
+                    Farm.pauseLen = Lair.pause
+                    lairStatus("killing " .. boss.Name)
+                    farmStep(boss.Name)
+                    task.wait(Lair.pause)
+                else
+                    -- no boss: ask the nearest NPC for the quest (throttled)
+                    local npc = nearestNPC(Lair.range)
+                    if npc then
+                        local now = os.clock()
+                        if now - Lair._lastFire > 1.5 then
+                            Lair._lastFire = now
+                            Lair.npc = npc.Name
+                            pcall(fireNPC, npc.Name, "QuestDone")
+                            pcall(fireNPC, npc.Name, "Done")
+                            lairStatus("requesting " .. npcPrettyLabel(npc))
+                        end
+                    else
+                        local h = nearestHostile()
+                        if h then
+                            Lair.boss = h.Name
+                            lairStatus("clearing " .. h.Name)
+                            farmStep(h.Name)
+                        else
+                            lairStatus("waiting for target")
+                        end
+                    end
+                    task.wait(0.3)
+                end
+            end)
+            if not ok then task.wait(0.5) end
+        end
     end)
+    lairStatus("running")
+end
+
+CreateNote("Status: idle", "Lair Farm")
+Lair.lastStatus = "idle"
+
+CreateToggle("AUTO Lair Farm (nearest)", "Lair Farm", function()
+    if Lair.on then
+        lairStop()
+        CreateNotification("Lair", "off", { Duration = 3 })
+    else
+        lairStart()
+        CreateNotification("Lair", "auto on", { Duration = 3 })
+    end
 end)
 
-CreateTextBox("Pause length (s)", "Lair Farm", { CustomText = "0.4" }, function(t)
-    Farm.pauseLen = tonumber(t) or Farm.pauseLen
+CreateButton("Stop everything", "Lair Farm", function()
+    lairStop()
+    farmStop()
+    CreateNotification("Lair", "all stopped", { Duration = 3 })
 end)
-CreateToggle("Use pausing", "Lair Farm", function()
-    Farm.pauseOn = not Farm.pauseOn
+
+CreateTextBox("Distance", "Lair Farm", { CustomText = "4" }, function(t)
+    Lair.distance = tonumber(t) or Lair.distance
 end)
+CreateTextBox("Pause (s)", "Lair Farm", { CustomText = "0.4" }, function(t)
+    Lair.pause = tonumber(t) or Lair.pause
+end)
+CreateTextBox("NPC search range", "Lair Farm", { CustomText = "40" }, function(t)
+    Lair.range = tonumber(t) or Lair.range
+end)
+
 CreateToggle("Insta-Kill (local HP write)", "Lair Farm", function()
     Farm.instaKill = not Farm.instaKill
 end)
 
--- lair bosses are the models that carry a Dungeon marker in their name
-local function lairBosses()
-    local out = {}
+CreateButton("Select lair NPC (nearest)", "Lair Farm", function()
+    local m, d = nearestNPC(Lair.range)
+    if not m then
+        CreateNotification("Lair", "no NPC in range", { Duration = 4 })
+        return
+    end
+    Lair.npc = m.Name
+    CreateNotification("Lair", npcPrettyLabel(m) .. " (" .. math.floor(d) .. ")", { Duration = 4 })
+end)
+
+CreateButton("Pick lair NPC from list", "Lair Farm", function()
+    makePicker("Lair: NPC list", allNPCs(), function(name)
+        Lair.npc = name
+        CreateNotification("Lair", "npc: " .. npcPrettyLabel(npcObj(name)), { Duration = 4 })
+    end)
+end)
+
+CreateButton("Scan lair bosses", "Lair Farm", function()
     local living = WS:FindFirstChild("Living")
-    if not living then return out end
-    for _, m in ipairs(living:GetChildren()) do
-        if m:IsA("Model") then
-            local n = m.Name
-            if n == "Boss" or string.find(n, "Dungeon", 1, true)
-               or string.find(n, "%[Dungeon%]") then
-                out[#out + 1] = n
+    local b = {}
+    if living then
+        for _, m in ipairs(living:GetChildren()) do
+            if m:IsA("Model") then
+                local n = m.Name
+                if n == "Boss" or string.find(n, "Dungeon", 1, true)
+                   or string.find(n, "%[Dungeon%]") then
+                    b[#b + 1] = n
+                end
             end
         end
     end
-    return out
-end
-
-CreateButton("Scan lair bosses", "Lair Farm", function()
-    local b = lairBosses()
     if #b == 0 then
-        CreateNotification("Lair", "no lair boss in Living", { Duration = 4 })
+        CreateNotification("Lair", "no lair boss right now", { Duration = 4 })
         return
     end
     makePicker("Lair: Bosses", b, function(name)
+        Farm.distance = Lair.distance
         farmStart(name)
         CreateNotification("Lair", "on " .. name, { Duration = 3 })
     end)
 end)
-CreateToggle("Begin Lair Farm", "Lair Farm", function()
-    if Farm.running then
-        farmStop()
-        CreateNotification("Lair", "stopped", { Duration = 3 })
-    else
-        farmStart(Farm.target or "Jotaro Over Heaven")
-        CreateNotification("Lair", "farming " .. tostring(Farm.target), { Duration = 3 })
-    end
-end)
 
 CreateButton("Fire LairStart", "Lair Farm", function() fire("LairStart") end)
 CreateButton("Fire LairClear", "Lair Farm", function() fire("LairClear") end)
+
 
 -- ── LOCALPLAYER ───────────────────────────────────────────────
 CreateMenu("LocalPlayer")
@@ -2060,6 +2430,11 @@ end)
 -- ── DIAGNOSTICS ───────────────────────────────────────────────
 CreateMenu("Diagnostics")
 
+CreateButton("Refresh UI layout", "Diagnostics", function()
+    restyle()
+    CreateNotification("UI", "layout re-applied", { Duration = 3 })
+end)
+
 CreateButton("Remote Health Check", "Diagnostics", function()
     local must = {
         "CoolDownGUI", "SwitchStand", "GetStandTier", "BuyItem", "SellKetchup",
@@ -2097,6 +2472,9 @@ end)
 -- No second listener here: two toggles on one frame cancel each other out.
 
 -- ── EXTERNAL API (lets the agent drive everything from outside) ──
+-- every menu exists now — proportion the whole window in one pass
+restyle()
+
 getgenv().ArcticAPI = {
     press       = press,
     moveset     = getMoveset,
@@ -2147,6 +2525,7 @@ getgenv().ArcticAPI = {
     instaKill      = instaKill,
     landmarks      = LANDMARKS,
     makePicker     = makePicker,
+    restyle        = restyle,
     standGuiName   = standGuiName,
     scanGrabbable  = scanGrabbable,
 }

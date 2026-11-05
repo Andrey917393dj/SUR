@@ -38,7 +38,7 @@
 | **Teleports** | 14 именованных локаций + 3 Dark Entrance + **все NPC по их именам из игры** |
 | **Boss Farm** | 8 пресетов + **Scan live targets** (список из `Workspace.Living`) |
 | **Quest Farm** | **Pick quest NPC** (список 68 NPC), gap, QuestDone/Done |
-| **Lair Farm** | **Select lair NPC (nearest)**, список лейр-боссов, паузы |
+| **Lair Farm** | **полный AUTO: сам находит лейр-босса → NPC квеста → враждебного моба** |
 | **Farm Settings** | Refresh Movesets, Use Custom Moves, список тяжёлых клавиш |
 | **Player** | Speed, Jump, Fly (WASD), Noclip |
 | **LocalPlayer** | Open Stand Storage, Anti AFK, Auto Umbrella, Reset |
@@ -50,6 +50,46 @@
 > Ничего не нужно печатать руками: стенды, атрибуты, NPC, боссы и предметы
 > берутся списками из самой игры. Текстовые поля остались только там, где
 > значение числовое (дистанция, пауза, сумма).
+
+---
+
+## Lair Farm — полностью автоматический
+
+Никакого «выбери NPC из списка и нажми старт». Один тоггл, дальше скрипт сам
+каждый цикл решает, что делать:
+
+```
+есть лейр-босс в радиусе?  ->  агрим его (M1 + тяжёлые)
+иначе есть NPC квеста?     ->  Done + QuestDone (троттлинг 1.5с)
+иначе есть враждебный моб? ->  агрим его
+иначе                      ->  ждём 0.5с и сканируем снова
+```
+
+Приоритет, радиус поиска, дистанция боя и пауза — три числовых поля, всё
+остальное берётся из мира. Статус пишется прямо в меню (`Status: ...`) и
+дублируется в F9.
+
+Ручные кнопки остались как переопределение: `Select lair NPC (nearest)`,
+`Pick lair NPC from list`, `Scan lair bosses`, `Fire LairStart` / `LairClear`.
+
+---
+
+## Интерфейс
+
+Окно **720×470**, по центру экрана, тянется за шапку, закрывается крестиком,
+тоггл — **J**.
+
+- сайдбар 200 px, меню отсортированы по частоте использования
+  (Home → Combat → фармы → телепорты → остальное), скроллится;
+- строки 30 px, подпись слева на всю ширину, тоггл-пилюля прижата к правому
+  краю, текстовое поле — правая половина строки;
+- короткие `CreateNote` автоматически становятся акцентными заголовками
+  секций, длинные — приглушённым пояснением с переносом строк;
+- тёмная тема + фиолетовый акцент, тонкая обводка окна.
+
+Раскладка считается от размеров родителей, поэтому новые меню (списки стендов,
+атрибутов, NPC) стилизуются сами при создании. Если что-то поехало —
+**Diagnostics → Refresh UI layout**.
 
 
 ---
@@ -242,4 +282,5 @@ mods esp refreshESP clearESP setSpeed setJump startFly stopFly startNoclip stopN
 fake fakeStart fakeStop fakeApply fakeStandSpawn fakeStandClear
 standCatalog standPretty attriCatalog dataValue statsFolder
 farm farmStart farmStop farmStep landmarks
+makePicker restyle
 ```

@@ -8,7 +8,7 @@
 
 -- ══ module scope: Start() fills these, API functions read them ══
 local ScreenGui, Frame, Hotbar, CloseButton, TitleLabel, Buttons, Handler, Menus
-local DefaultColor = Color3.fromRGB(0, 51, 102)
+local DefaultColor = Color3.fromRGB(124, 106, 255)
 local TweenServ = game:GetService("TweenService")
 local UIS       = game:GetService("UserInputService")
 
@@ -65,14 +65,14 @@ function Start(A, B)
     ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
     Frame.Parent = ScreenGui
-    Frame.BackgroundColor3 = Color3.fromRGB(8, 8, 8)
+    Frame.BackgroundColor3 = Color3.fromRGB(13, 13, 16)
     Frame.BorderSizePixel = 0
     Frame.Position = UDim2.new(0.311278194, 0, 0.288372099, 0)
     Frame.Size = UDim2.new(0, 501, 0, 273)
 
     Hotbar.Name = "Hotbar"
     Hotbar.Parent = Frame
-    Hotbar.BackgroundColor3 = Color3.fromRGB(17, 17, 17)
+    Hotbar.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
     Hotbar.BorderSizePixel = 0
     Hotbar.Size = UDim2.new(0, 501, 0, 27)
 
@@ -101,7 +101,7 @@ function Start(A, B)
 
     Buttons.Name = "Buttons"
     Buttons.Parent = Frame
-    Buttons.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+    Buttons.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
     Buttons.BorderSizePixel = 0
     Buttons.Position = UDim2.new(0, 0, 0.0989011005, 0)
     Buttons.Size = UDim2.new(0, 149, 0, 246)
@@ -209,7 +209,7 @@ local function MakeIndicatorLoop(indicator, getFlagFn)
             local state = not not getFlagFn()
             if state ~= lastState then
                 lastState = state
-                local target = state and DefaultColor or Color3.fromRGB(6, 6, 6)
+                local target = state and DefaultColor or Color3.fromRGB(10, 10, 13)
                 TweenServ:Create(indicator, tweenInf, {BackgroundColor3 = target}):Play()
             end
             task.wait(0.1)
