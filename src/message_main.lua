@@ -129,7 +129,7 @@ local function jobStop(name)
     job.connections = {}
     if Runtime.movement == job then Runtime.movement = nil end
     if job.onStop then
-        local ok, err = pcall(job.onStop)
+        local ok, err = pcall(job.onStop, job)
         if not ok then recordError(name .. " stop", err) end
     end
     local thread = job.thread
@@ -552,9 +552,15 @@ local function webhookSend(url, payload)
     })
 end
 
-local function tpToCF(cf)
+local function tpToCF(cf, job)
     local p = hrp()
-    if not Runtime.alive or not (p and cf) then return false end
+    if not Runtime.alive or not (p and cf) or (job and not jobActive(job)) then return false end
+    -- A manual scripted move must not masquerade as a server entry transfer.
+    -- Job-owned item/merchant movement keeps its own generation instead.
+    if not job and Runtime.movement then
+        Runtime.movement.cancelReason = "manual_teleport"
+        jobStop(Runtime.movement.name)
+    end
     local moved = pcall(function() p.CFrame = cf end)
     if not moved then return false end
     local c = char()
@@ -858,6 +864,7 @@ bossFarm("Alternate Jotaro Part 4",  "Farm: Jotaro Part 4")
 -- ══════════════════════════════════════════════════════════════════════════
 CreateMenu("Lair Farm")
 CreateNote("Selected Lair NPC: None", "Lair Farm")
+CreateNote("Lair status: idle", "Lair Farm")
 
 CreateButton("Tutorial", "Lair Farm", function()
     notify("Step 1 (Quest Selection), Stand Near Lair NPC And Press 'Select Lair NPC'", 6)
@@ -971,107 +978,196 @@ CreateTextBox("Pause Length", "Lair Farm", {}, function(Input)
 end)
 
 local StartLairFarming = false
+local LairState = {
+    phase = "idle", stopReason = nil, detail = nil, anchor = nil, origin = nil,
+    entrySent = false, entryAt = nil, arrival = nil, target = nil, targetRoot = nil, targetHum = nil,
+    trace = {},
+}
 
--- The existing exact Living.Boss can be used only in the current arena.
--- Never follow it across the map or guess a world boss by a similar name.
+local function lairStatus(phase, reason, detail)
+    local changed = LairState.phase ~= phase or LairState.stopReason ~= reason or LairState.detail ~= detail
+    LairState.phase, LairState.stopReason, LairState.detail = phase, reason, detail
+    setNote("Lair status:", "Lair status: " .. phase .. (detail and (" — " .. detail) or ""))
+    if changed then
+        local entry = { time = os.clock(), phase = phase, reason = reason, detail = detail }
+        LairState.trace[#LairState.trace + 1] = entry
+        if #LairState.trace > 24 then table.remove(LairState.trace, 1) end
+        print("[Arctic SUR][Lair] " .. phase .. (reason and (" / " .. reason) or "") .. (detail and (" / " .. detail) or ""))
+    end
+end
+
+-- Only one exact live Living.Boss in the anchored arena; no world-name fallback.
+-- Entry may correlate one observed arrival with the captured successful Done.
+-- That client correlation is not proof of server arena ownership.
 local function arenaBoss(anchor)
     local L = living()
     if not L then return nil end
-    local found
+    local found, foundRoot, foundHum
     for _, b in ipairs(L:GetChildren()) do
-        if b.Name == "Boss" and not Players:GetPlayerFromCharacter(b) then
+        if b:IsA("Model") and b.Name == "Boss" and not Players:GetPlayerFromCharacter(b) then
             local h, root = b:FindFirstChildOfClass("Humanoid"), b:FindFirstChild("HumanoidRootPart")
-            if h and root and h.Health > 0 and (root.Position - anchor).Magnitude <= LairArenaRadius then
-                if found then return nil, "Several Boss models in arena; stopped" end
-                found = b
+            if h and root and root:IsA("BasePart") and h.Health > 0 and (root.Position - anchor).Magnitude <= LairArenaRadius then
+                if found then return nil, "boss_ambiguous" end
+                found, foundRoot, foundHum = b, root, h
             end
         end
     end
-    return found
+    return found, nil, foundRoot, foundHum
 end
 
-local function stopLairFarm()
+local function stopLairFarm(reason, detail)
     StartLairFarming = false
+    if reason or LairState.phase ~= "stopped" then lairStatus("stopped", reason or "user_off", detail or "Stopped") end
     jobStop("lair")
     SetToggle("Begin Lair Farm", "Lair Farm", false)
 end
-stopLairSelection = stopLairFarm
+stopLairSelection = function() stopLairFarm("provider_changed", "Lair NPC reselected") end
 
 local function startLairFarm()
     if StartLairFarming and Runtime.jobs.lair then return true end
-    local p, h = hrp(), hum()
+    local p, h, character = hrp(), hum(), char()
     if not Runtime.alive or not (p and h and h.Health > 0) or not selectedLairReady() then
+        lairStatus("stopped", "not_ready", "Select a nearby Lair NPC and use a live character")
         notify("You Are Missing A Step! Please Check Tutorial Then Re-Enable!")
         return false
     end
     local npcRoot = SelectedLairNPC.HumanoidRootPart
     if (p.Position - npcRoot.Position).Magnitude > LairArenaRadius then
+        lairStatus("stopped", "provider_far", "Selected NPC is in another area")
         notify("Selected Lair NPC is in another area. Select the nearby NPC again.", 6)
         return false
     end
+    local selectedProvider, providerRoot = SelectedLairNPC, npcRoot
+    local providerDone = selectedProvider:FindFirstChild("Done")
     StartLairFarming = true
     sessionStart, nextTriggerAt = os.clock(), 0
-    local anchor = p.Position
-    local selectedProvider = SelectedLairNPC
-    jobStart("lair", true, function()
+    LairState.origin, LairState.anchor = p.Position, p.Position
+    LairState.entrySent, LairState.entryAt, LairState.arrival = false, nil, nil
+    LairState.target, LairState.targetRoot, LairState.targetHum = nil, nil, nil
+    LairState.trace = {}
+    lairStatus("entry", nil, "Waiting for exact Boss or one entry request")
+    jobStart("lair", true, function(job)
         StartLairFarming = false
+        if LairState.phase ~= "stopped" then
+            lairStatus("stopped", job.cancelReason or "cancelled", "Lair worker cancelled")
+        end
         SetToggle("Begin Lair Farm", "Lair Farm", false)
     end, function(job)
         local deadline = sessionStart + STEALTH.SessionMaxMin * 60
-        local function active()
+        local entryDeadline = os.clock() + 40
+        local entered, anchored = false, false
+        local boss, targetRoot, targetHum
+        local function exit(reason, text)
+            lairStatus("stopped", reason, text)
+            notify("Lair Farm: " .. text, 6)
+            return false
+        end
+        local function live()
             if not jobActive(job) then return false end
-            if os.clock() >= deadline then notify("Lair Farm: session limit reached, stopped.", 6); return false end
-            local root, humanoid = hrp(), hum()
-            if SelectedLairNPC ~= selectedProvider or not selectedLairReady()
-                or not (root and humanoid and humanoid.Health > 0)
-                or (root.Position - anchor).Magnitude > LairArenaRadius then return false end
+            if os.clock() >= deadline then return exit("session_limit", "session limit reached") end
+            if SelectedLairNPC ~= selectedProvider then return exit("provider_changed", "selected NPC changed") end
+            if char() ~= character or hrp() ~= p or hum() ~= h then return exit("character_changed", "character changed") end
+            if not p.Parent or not h.Parent or h.Health <= 0 then return exit("character_unavailable", "no live character") end
+            if anchored and (p.Position - LairState.anchor).Magnitude > LairArenaRadius + LairDistance then
+                return exit("arena_left", "left the captured arena; stopped")
+            end
             return true
         end
-        while active() do
-            local localRoot, localHum = hrp(), hum()
-            if not selectedLairReady() or not (localRoot and localHum and localHum.Health > 0) then
-                notify("Lair Farm: character or selected NPC unavailable; stopped.", 5)
+        local function capture(candidate, root, humanoid, anchor)
+            boss, targetRoot, targetHum = candidate, root, humanoid
+            LairState.target, LairState.targetRoot, LairState.targetHum = candidate, root, humanoid
+            LairState.anchor = anchor
+            entered, anchored = true, true
+            lairStatus("fight", nil, "Exact Boss acquired")
+        end
+        while live() and not entered and os.clock() < entryDeadline do
+            local lookupAnchor = LairState.arrival or LairState.origin
+            local moved = (p.Position - LairState.origin).Magnitude > LairArenaRadius
+            if LairState.arrival then
+                if (p.Position - LairState.arrival).Magnitude > LairArenaRadius then
+                    exit("entry_changed", "another displacement before Boss acquisition")
+                    return
+                end
+            elseif moved then
+                if not LairState.entrySent then
+                    exit("entry_unrequested", "left the origin before a successful entry request")
+                    return
+                end
+                LairState.arrival, lookupAnchor = p.Position, p.Position
+                lairStatus("arrival", nil, "Observed arrival; waiting for exact nearby Boss")
+            end
+            local candidate, reason, root, humanoid = arenaBoss(lookupAnchor)
+            if reason then exit(reason, "several exact Boss models in the current arena"); return end
+            if candidate then
+                capture(candidate, root, humanoid, lookupAnchor)
                 break
             end
-            if (localRoot.Position - anchor).Magnitude > LairArenaRadius then
-                notify("Lair Farm: left selected arena; stopped.", 5)
-                break
+            if not LairState.entrySent then
+                -- Never write our provider approach after entry, and never recapture
+                -- the origin from a scripted approach as if it were an arena arrival.
+                if not selectedLairReady() or selectedProvider:FindFirstChild("HumanoidRootPart") ~= providerRoot
+                    or selectedProvider:FindFirstChild("Done") ~= providerDone then
+                    exit("provider_unavailable", "selected entry NPC unavailable")
+                    return
+                end
+                if (p.Position - providerRoot.Position).Magnitude > 25 then
+                    if not approach(selectedProvider, 6, job) then
+                        if not waitActive(0.1, job) then return end
+                    else
+                        LairState.origin, LairState.anchor = p.Position, p.Position
+                    end
+                else
+                    LairState.origin, LairState.anchor = p.Position, p.Position
+                    local ok = TriggerLair(true, job)
+                    if not ok then exit("entry_request_failed", "entry request could not be sent"); return end
+                    if not live() then return end
+                    LairState.entrySent, LairState.entryAt = true, os.clock()
+                    lairStatus("entry", nil, "Entry request sent once; waiting for transfer/Boss")
+                end
             end
-            local boss, reason = arenaBoss(anchor)
-            if reason then notify(reason, 5); break end
-            local started = os.clock()
-            while active() and not boss and os.clock() - started < 40 do
-                -- No teleport back to a distant provider when Boss disappears.
-                TriggerLair(false, job)
-                if not waitActive(jitter(0.9, 1.5), job) then break end
-                boss, reason = arenaBoss(anchor)
-                if reason then break end
-            end
-            if not active() then break end
-            if not boss then notify(reason or "Lair Farm: no Living.Boss in this arena; stopped.", 6); break end
-            if ShortPause and not waitActive(PauseTimer, job) then break end
-            if not active() then break end
+            if not waitActive(0.1, job) then return end
+        end
+        if not live() then return end
+        if not entered then exit("entry_timeout", "no exact Boss at the observed arrival within 40 seconds"); return end
+        while live() do
+            if ShortPause and not waitActive(PauseTimer, job) then return end
             local L = living()
-            local targetHum = boss:FindFirstChildOfClass("Humanoid")
-            while active() and boss.Parent == L and targetHum and targetHum.Health > 0 do
-                local targetRoot = boss:FindFirstChild("HumanoidRootPart")
-                if not targetRoot or (targetRoot.Position - anchor).Magnitude > LairArenaRadius then
-                    notify("Lair Farm: boss left selected arena; stopped.", 5)
+            while live() and boss.Parent == L and targetHum.Health > 0 do
+                if boss.Name ~= "Boss" or boss:FindFirstChild("HumanoidRootPart") ~= targetRoot or boss:FindFirstChildOfClass("Humanoid") ~= targetHum
+                    or not targetRoot.Parent or Players:GetPlayerFromCharacter(boss) then
+                    exit("boss_changed", "exact Boss root/Humanoid/owner changed")
+                    return
+                end
+                if (targetRoot.Position - LairState.anchor).Magnitude > LairArenaRadius then
+                    exit("boss_left", "Boss left the captured arena")
                     return
                 end
                 if holdPosition(boss, LairDistance, Underneath, job) then
                     if InstantBossKill then
                         killTarget(boss)
-                        notify("Local HP=0 attempted. Server kill is not confirmed; farm stopped.", 6)
+                        exit("instant_attempt", "local HP=0 attempted; server kill unconfirmed")
                         return
                     end
                     attackStep(job)
                 end
-                if not waitActive(jitter(STEALTH.AttackMin, STEALTH.AttackMax), job) then break end
+                if not waitActive(jitter(STEALTH.AttackMin, STEALTH.AttackMax), job) then return end
             end
-            if not active() then break end
-            if ShortPause and not waitActive(PauseTimer, job) then break end
-            if not waitActive(jitter(0.4, 0.9), job) then break end
+            if not live() then return end
+            LairState.target, LairState.targetRoot, LairState.targetHum = nil, nil, nil
+            local acquisitionDeadline = os.clock() + 40
+            lairStatus("acquire", nil, "Boss gone; waiting only inside the captured arena")
+            local nextBoss, reason, root, humanoid
+            while os.clock() < acquisitionDeadline and live() do
+                nextBoss, reason, root, humanoid = arenaBoss(LairState.anchor)
+                if reason then exit(reason, "several exact Boss models in the captured arena"); return end
+                if nextBoss then break end
+                -- This is not an entry phase: never reset the anchor, never pull
+                -- back to an origin NPC or fire another entry request from here.
+                if not waitActive(0.1, job) then return end
+            end
+            if not live() then return end
+            if not nextBoss then exit("boss_timeout", "no new exact Boss inside the captured arena"); return end
+            capture(nextBoss, root, humanoid, LairState.anchor)
         end
     end)
     return StartLairFarming
@@ -1324,7 +1420,7 @@ end
 local function grabTool(t, job)
     local p, c = hrp(), char()
     if not jobActive(job) or not (p and t and t.part.Parent and worldItem(t.obj)) then return false end
-    if not tpToCF(t.part.CFrame) or not waitActive(0.15, job) or char() ~= c then return false end
+    if not tpToCF(t.part.CFrame, job) or not waitActive(0.15, job) or char() ~= c then return false end
     if ownItem(t.obj) then return true end
     if not worldItem(t.obj) then return false end
     if t.prompt then fireProximity(t.prompt, job) end
@@ -1711,7 +1807,7 @@ local function buyArrow(job)
     local npc = nf and (nf:FindFirstChild(merchant) or (charged and nf:FindFirstChild("Merchantlvl120")))
     local c = char()
     if not (buy and buy:IsA("RemoteEvent") and npc and npc:FindFirstChild("HumanoidRootPart")) or not rollReady(job, c) then return false, "Arrow merchant unavailable" end
-    if not tpToCF(npc.HumanoidRootPart.CFrame) then return false, "Could not reach arrow merchant" end
+    if not tpToCF(npc.HumanoidRootPart.CFrame, job) then return false, "Could not reach arrow merchant" end
     if not waitActive(0.5, job) or not rollReady(job, c) or stopOnStandMatch(job) then return false, "cancelled" end
     -- Merchantlvl120 is the protocol role in the saved NpcDialogue client.
     local sent = pcall(function() buy:FireServer(charged and "Merchantlvl120" or "MerchantAU", charged and "Option2" or "Option4") end)
@@ -1726,7 +1822,7 @@ local function buyRokakaka(job)
     local npc = nf and nf:FindFirstChild("MerchantAU")
     local c = char()
     if not (buy and buy:IsA("RemoteEvent") and npc and npc:FindFirstChild("HumanoidRootPart")) or not rollReady(job, c) then return false, "Rokakaka merchant unavailable" end
-    if not tpToCF(npc.HumanoidRootPart.CFrame) then return false, "Could not reach Rokakaka merchant" end
+    if not tpToCF(npc.HumanoidRootPart.CFrame, job) then return false, "Could not reach Rokakaka merchant" end
     if not waitActive(0.5, job) or not rollReady(job, c) or stopOnStandMatch(job) then return false, "cancelled" end
     local sent = pcall(function() buy:FireServer("MerchantAU", "Option2") end)
     if not sent then return false, "Rokakaka purchase request failed" end
@@ -1859,7 +1955,11 @@ publicEnv.SUR_unload = SUR.unload
 -- Local character transitions cannot carry a farm into an unrelated spawn.
 runConnect(LP.CharacterRemoving, function()
     local job = Runtime.movement
-    if job then jobStop(job.name) end
+    if job and job.name == "lair" then
+        stopLairFarm("character_changed", "character changed")
+    elseif job then
+        jobStop(job.name)
+    end
 end)
 
 stopFakeProfile = function() fakeStop() end
@@ -1887,11 +1987,16 @@ function SUR.state()
         position  = p and { X = p.Position.X, Y = p.Position.Y, Z = p.Position.Z } or nil,
         lairNPC   = SelectedLairNPCText,
         lairOn    = StartLairFarming,
+        lairPhase = LairState.phase,
+        lairStopReason = LairState.stopReason,
+        lairDetail = LairState.detail,
+        lairEntrySent = LairState.entrySent,
+        lairAnchor = LairState.anchor and { X = LairState.anchor.X, Y = LairState.anchor.Y, Z = LairState.anchor.Z } or nil,
         instant   = InstantBossKill,
         underneath= Underneath,
         bossAlive = (function()
-            local b = findLairBoss()
-            return b and b.Name or nil
+            local b = StartLairFarming and LairState.target or findLairBoss()
+            return b and b.Parent and b.Name or nil
         end)(),
     }
 end
@@ -1952,7 +2057,7 @@ function SUR.selectLair(fragment, radius)
     local main = head and head:FindFirstChild("Main")
     local txt  = main and main:FindFirstChild("Text")
 
-    stopLairFarm()
+    stopLairFarm("provider_changed", "Lair NPC reselected")
     SelectedLairNPC = pick
     SelectedLairNPCText = (txt and txt.Text) or pick.Name
     setNote("Selected Lair NPC:", "Selected Lair NPC: " .. SelectedLairNPCText)
@@ -2017,7 +2122,11 @@ end
 
 
 function SUR.diagnostics()
-    local out = { active = Runtime.alive, jobs = {}, errors = {}, connections = 0, tasks = 0 }
+    local out = { active = Runtime.alive, jobs = {}, errors = {}, connections = 0, tasks = 0,
+        lair = { phase = LairState.phase, stopReason = LairState.stopReason, detail = LairState.detail, trace = {} } }
+    for i, entry in ipairs(LairState.trace) do
+        out.lair.trace[i] = { time = entry.time, phase = entry.phase, reason = entry.reason, detail = entry.detail }
+    end
     for name in pairs(Runtime.jobs) do out.jobs[#out.jobs + 1] = name end
     table.sort(out.jobs)
     for _, connection in ipairs(Runtime.connections) do if connection.Connected then out.connections = out.connections + 1 end end

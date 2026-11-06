@@ -1114,5 +1114,327 @@ return function(mock, source, originalControls)
         cleanErrors(); unload()
     end)
 
+    test("Lair entry adopts the observed arrival once, not the launch location", function()
+        fresh(); purgeProviders()
+        local _,_,done=provider("ExplicitLair",0,0,0)
+        local env=mock.env
+        local requests,attacks=0,0
+        local bossHum
+        player().Character.StandEvents.Input.FireServer=function(_,packet)
+            if packet.State=="Begin" and packet.Type==env.Enum.UserInputType.MouseButton1 then attacks=attacks+1 end
+        end
+        done.FireServer=function()
+            requests=requests+1
+            env.task.delay(0.05,function()
+                player().Character.HumanoidRootPart.CFrame=env.CFrame.new(10000,0,0)
+                local _,h=npc("Boss",10010,0,0); bossHum=h
+            end)
+        end
+        expect(env.SUR.selectLair("ExplicitLair",15),"provider selection failed")
+        env.SUR.lairStart(); advance(2)
+        expect(requests==1,"more than one in-flight entry request")
+        expect(env.SUR.state().lairOn and indicator("Begin Lair Farm","Lair Farm"),"legitimate entry painted OFF")
+        expect(attacks>0,"exact arrival Boss never attacked")
+        expect(bossHum.Health==100,"normal entry farm wrote local HP")
+        expect(env.SUR.state().lairPhase=="fight","arrival did not enter fight phase")
+        expect(env.SUR.state().lairAnchor.X>9000,"launch anchor remained after entry")
+        cleanErrors(); unload()
+    end)
+
+    test("Lair arrival waits for delayed Boss without pulling back to the provider", function()
+        fresh(); purgeProviders()
+        local _,_,done=provider("ExplicitLair",0,0,0)
+        local env=mock.env
+        local requests=0
+        done.FireServer=function()
+            requests=requests+1
+            env.task.delay(0.05,function() player().Character.HumanoidRootPart.CFrame=env.CFrame.new(10000,0,0) end)
+            env.task.delay(3,function() npc("Boss",10010,0,0) end)
+        end
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart(); advance(1)
+        expect(env.SUR.state().lairOn,"OFF before delayed Boss could stream")
+        expect(player().Character.HumanoidRootPart.Position.X>9000,"pulled back to origin provider during entry")
+        expect(requests==1,"entry spammed provider while waiting")
+        advance(3.5)
+        expect(env.SUR.state().lairOn and env.SUR.state().lairPhase=="fight","delayed arrival Boss not acquired")
+        cleanErrors(); unload()
+    end)
+
+    test("Origin provider streaming out after entry does not stop the current Boss", function()
+        fresh(); purgeProviders()
+        local origin,_,done=provider("ExplicitLair",0,0,0)
+        local env=mock.env
+        done.FireServer=function()
+            env.task.delay(0.05,function()
+                player().Character.HumanoidRootPart.CFrame=env.CFrame.new(10000,0,0)
+                npc("Boss",10010,0,0)
+                origin.Parent=nil
+            end)
+        end
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart(); advance(2)
+        expect(env.SUR.state().lairOn and env.SUR.state().lairPhase=="fight","unstreamed origin stopped valid arena fight")
+        cleanErrors(); unload()
+    end)
+
+    test("Entry displacement never broadens Boss name or adopts a distant replacement", function()
+        fresh(); purgeProviders()
+        local _,_,done=provider("ExplicitLair",0,0,0)
+        local env=mock.env
+        local requests=0
+        done.FireServer=function()
+            requests=requests+1
+            env.task.delay(0.05,function()
+                player().Character.HumanoidRootPart.CFrame=env.CFrame.new(10000,0,0)
+                npc("Jotaro Over Heaven",10010,0,0)
+                npc("Boss",20000,0,0)
+            end)
+        end
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart(); advance(2)
+        expect(player().Character.HumanoidRootPart.Position.X==10000,"followed arbitrary world/distant boss")
+        advance(40)
+        expect(not env.SUR.state().lairOn,"unconfirmed entry waited forever")
+        expect(requests==1,"unconfirmed entry repeatedly sent provider Done")
+        expect(env.SUR.state().lairStopReason=="entry_timeout","missing entry timeout reason")
+        cleanErrors(); unload()
+    end)
+
+    test("A completed arena cannot rebase itself into an unrelated later arena", function()
+        fresh(); purgeProviders(); provider("ExplicitLair",0,0,0)
+        local boss=npc("Boss",10,0,0)
+        local env=mock.env
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart(); advance(0.5)
+        boss:Destroy()
+        player().Character.HumanoidRootPart.CFrame=env.CFrame.new(10000,0,0)
+        npc("Boss",10010,0,0)
+        advance(1.5)
+        expect(not env.SUR.state().lairOn,"post-fight displacement was treated as a new entry")
+        expect(env.SUR.state().lairStopReason=="arena_left","missing post-fight arena exit reason")
+        cleanErrors(); unload()
+    end)
+
+    test("Lair OFF during entry cancels acquisition without delayed teleport or attack", function()
+        fresh(); purgeProviders()
+        local _,_,done=provider("ExplicitLair",0,0,0)
+        local env=mock.env
+        done.FireServer=function()
+            env.task.delay(0.1,function()
+                player().Character.HumanoidRootPart.CFrame=env.CFrame.new(10000,0,0)
+                npc("Boss",10010,0,0)
+            end)
+        end
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart(); env.SUR.lairStop()
+        advance(2)
+        expect(not env.SUR.state().lairOn and not indicator("Begin Lair Farm","Lair Farm"),"OFF entry resurrected")
+        expect(player().Character.HumanoidRootPart.Position.X==10000,"cancelled entry worker moved to spawned Boss")
+        expect(#env.SUR.diagnostics().jobs==0,"entry worker leaked after OFF")
+        cleanErrors(); unload()
+    end)
+
+    test("Entry phase cannot inherit a respawned local character", function()
+        fresh(); purgeProviders()
+        local _,_,done=provider("ExplicitLair",0,0,0)
+        local env=mock.env
+        done.FireServer=function()
+            env.task.delay(0.05,function()
+                local replacement=npc("RespawnedPlayer",10000,0,0)
+                player().Character=replacement
+                npc("Boss",10010,0,0)
+            end)
+        end
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart(); advance(2)
+        expect(not env.SUR.state().lairOn,"entry inherited another local character")
+        expect(env.SUR.state().lairStopReason=="character_changed","respawn stopped without explicit reason")
+        cleanErrors(); unload()
+    end)
+
+    test("A synchronous entry jump followed by failed Done cannot be adopted", function()
+        fresh(); purgeProviders()
+        local _,_,done=provider("ExplicitLair",0,0,0)
+        local env=mock.env
+        done.FireServer=function()
+            player().Character.HumanoidRootPart.CFrame=env.CFrame.new(10000,0,0)
+            npc("Boss",10010,0,0)
+            error("fixture rejects entry request")
+        end
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart(); advance(2)
+        expect(not env.SUR.state().lairOn,"failed entry request was adopted")
+        expect(env.SUR.state().lairStopReason=="entry_request_failed","missing failed entry request reason")
+        cleanErrors(); unload()
+    end)
+
+    test("Second pending arrival displacement is not adopted", function()
+        fresh(); purgeProviders()
+        local _,_,done=provider("ExplicitLair",0,0,0)
+        local env=mock.env
+        done.FireServer=function()
+            env.task.delay(0.05,function() player().Character.HumanoidRootPart.CFrame=env.CFrame.new(10000,0,0) end)
+            env.task.delay(0.5,function()
+                player().Character.HumanoidRootPart.CFrame=env.CFrame.new(20000,0,0)
+                npc("Boss",20010,0,0)
+            end)
+        end
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart(); advance(2)
+        expect(not env.SUR.state().lairOn and env.SUR.state().lairStopReason=="entry_changed","second pending displacement adopted")
+        expect(player().Character.HumanoidRootPart.Position.X==20000,"worker followed second destination Boss")
+        cleanErrors(); unload()
+    end)
+
+    test("Duplicate exact Boss at arrival does not select either", function()
+        fresh(); purgeProviders()
+        local _,_,done=provider("ExplicitLair",0,0,0)
+        local env=mock.env
+        done.FireServer=function()
+            env.task.delay(0.05,function()
+                player().Character.HumanoidRootPart.CFrame=env.CFrame.new(10000,0,0)
+                npc("Boss",10010,0,0); npc("Boss",10020,0,0)
+            end)
+        end
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart(); advance(2)
+        expect(not env.SUR.state().lairOn and env.SUR.state().lairStopReason=="boss_ambiguous","duplicate arrival Boss accepted")
+        expect(player().Character.HumanoidRootPart.Position.X==10000,"moved to ambiguous arrival Boss")
+        cleanErrors(); unload()
+    end)
+
+    test("Reselecting provider invalidates an already pending arrival", function()
+        fresh(); purgeProviders()
+        local _,_,done=provider("ExplicitLair",0,0,0)
+        provider("ReplacementLair",1,0,0)
+        local env=mock.env
+        done.FireServer=function()
+            env.task.delay(0.05,function()
+                player().Character.HumanoidRootPart.CFrame=env.CFrame.new(10000,0,0)
+                npc("Boss",10010,0,0)
+            end)
+        end
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart()
+        expect(env.SUR.selectLair("ReplacementLair",15),"replacement provider selection failed")
+        advance(2)
+        expect(not env.SUR.state().lairOn and env.SUR.state().lairStopReason=="provider_changed","reselection did not invalidate pending arrival")
+        expect(player().Character.HumanoidRootPart.Position.X==10000,"reselected worker moved to old Boss")
+        cleanErrors(); unload()
+    end)
+
+    test("New movement owner invalidates pending lair acquisition", function()
+        fresh(); purgeProviders()
+        local _,_,done=provider("ExplicitLair",0,0,0)
+        local env=mock.env
+        done.FireServer=function()
+            env.task.delay(0.05,function()
+                player().Character.HumanoidRootPart.CFrame=env.CFrame.new(10000,0,0)
+                npc("Boss",10010,0,0)
+            end)
+        end
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart()
+        click("Farm: Jotaro Over Heaven","Boss Farm"); advance(2)
+        expect(not env.SUR.state().lairOn and env.SUR.state().movement=="boss:Jotaro Over Heaven","new movement owner lost to stale entry")
+        expect(player().Character.HumanoidRootPart.Position.X==10000,"stale acquisition moved after ownership change")
+        cleanErrors(); unload()
+    end)
+
+    test("Scripted provider approach updates request origin but is not an arrival", function()
+        fresh(); purgeProviders()
+        local _,_,done=provider("ApproachedLair",400,0,0)
+        local env=mock.env
+        local requests=0
+        done.FireServer=function()
+            requests=requests+1
+            npc("Boss",410,0,0)
+        end
+        expect(env.SUR.selectLair("ApproachedLair",500),"far same-area provider not selected")
+        env.SUR.lairStart(); advance(1)
+        expect(requests==1 and env.SUR.state().lairOn,"bounded provider approach failed")
+        expect(env.SUR.state().lairAnchor.X>390 and env.SUR.state().lairAnchor.X<410,"approach confused request origin with external arrival")
+        cleanErrors(); unload()
+    end)
+
+    test("Synchronous successful entry transfer is captured before first wait", function()
+        fresh(); purgeProviders()
+        local _,_,done=provider("ExplicitLair",0,0,0)
+        local env=mock.env
+        done.FireServer=function()
+            player().Character.HumanoidRootPart.CFrame=env.CFrame.new(10000,0,0)
+            npc("Boss",10010,0,0)
+        end
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart(); advance(1)
+        expect(env.SUR.state().lairOn and env.SUR.state().lairAnchor.X==10000,"synchronous successful transfer lost")
+        cleanErrors(); unload()
+    end)
+
+    test("Own behind offset near arena radius cannot make the next tick stop", function()
+        fresh(); purgeProviders(); provider("ExplicitLair",0,0,0)
+        local env=mock.env
+        local _,_,root=npc("Boss",499,0,0)
+        root.CFrame=env.CFrame.new(499,0,0)*env.CFrame.Angles(0,math.pi/2,0)
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart(); advance(1.5)
+        expect(env.SUR.state().lairOn,"own behind offset tripped arena-left guard")
+        expect(player().Character.HumanoidRootPart.Position.X>500,"boundary fixture never moved beyond radius")
+        cleanErrors(); unload()
+    end)
+
+    test("Manual teleport during entry cancels lair before any arrival adoption", function()
+        fresh(); purgeProviders()
+        local _,_,done=provider("ExplicitLair",0,0,0)
+        local env=mock.env
+        done.FireServer=function() end
+        local stranger=mock.newInstance("Player","ManualDestination"); stranger.Parent=env.game:GetService("Players")
+        local c=mock.newInstance("Model","ManualCharacter"); c.Parent=mock.workspace; stranger.Character=c
+        local root=mock.newInstance("Part","HumanoidRootPart"); root.CFrame=env.CFrame.new(10000,0,0); root.Parent=c
+        npc("Boss",10010,0,0)
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart(); advance(0.1)
+        inputText("Teleport To","Teleports","ManualDestination"); advance(1)
+        expect(not env.SUR.state().lairOn,"manual teleport was adopted as entry")
+        expect(env.SUR.state().lairStopReason=="manual_teleport","manual teleport has no explicit cancellation reason")
+        expect(player().Character.HumanoidRootPart.Position.X==10000,"stale lair worker pulled manual destination toward Boss")
+        cleanErrors(); unload()
+    end)
+
+    test("Captured Lair Boss root replacement stops exact-target combat", function()
+        fresh(); purgeProviders(); provider("ExplicitLair",0,0,0)
+        local env=mock.env
+        local boss,h,root=npc("Boss",10,0,0)
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart(); advance(0.5)
+        root:Destroy()
+        local replacement=mock.newInstance("Part","HumanoidRootPart"); replacement.CFrame=env.CFrame.new(15,0,0); replacement.Parent=boss
+        advance(1)
+        expect(not env.SUR.state().lairOn and env.SUR.state().lairStopReason=="boss_changed","changed Boss root inherited captured combat")
+        expect(h.Health==100,"root replacement changed local HP")
+        cleanErrors(); unload()
+    end)
+
+    test("Renamed captured Lair Boss stops before another combat input", function()
+        fresh(); purgeProviders(); provider("ExplicitLair",0,0,0)
+        local env=mock.env
+        local boss=npc("Boss",10,0,0)
+        local attacks=0
+        player().Character.StandEvents.Input.FireServer=function(_,packet)
+            if packet.State=="Begin" and packet.Type==env.Enum.UserInputType.MouseButton1 then attacks=attacks+1 end
+        end
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart(); advance(0.5)
+        boss.Name="UnrelatedRole"
+        local before=attacks
+        advance(1)
+        expect(not env.SUR.state().lairOn and env.SUR.state().lairStopReason=="boss_changed","renamed Boss still farmed")
+        expect(attacks==before,"another attack sent after Boss rename")
+        cleanErrors(); unload()
+    end)
+
+    test("Reacquisition respects a fixed deadline and never attacks a late Boss", function()
+        fresh(); purgeProviders(); provider("ExplicitLair",0,0,0)
+        local env=mock.env
+        local boss=npc("Boss",10,0,0)
+        local attacks=0
+        player().Character.StandEvents.Input.FireServer=function(_,packet)
+            if packet.State=="Begin" and packet.Type==env.Enum.UserInputType.MouseButton1 then attacks=attacks+1 end
+        end
+        env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart(); advance(0.5)
+        boss:Destroy()
+        advance(41)
+        expect(not env.SUR.state().lairOn and env.SUR.state().lairStopReason=="boss_timeout","reacquisition deadline did not stop")
+        local before=attacks
+        npc("Boss",10,0,0); advance(1)
+        expect(attacks==before and not env.SUR.state().lairOn,"late Boss revived timed-out acquisition")
+        cleanErrors(); unload()
+    end)
+
     return #failures == 0, passed, failures
 end
