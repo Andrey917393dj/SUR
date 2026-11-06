@@ -287,56 +287,26 @@ local function jitter(min, max)
     return min + math.random() * (max - min)
 end
 
--- Поиск лейр-босса в Living.
--- ВАЖНО: только босс. Раньше здесь стоял фолбэк «любой живой Humanoid, не
--- игрок» — из-за него фарм перебирал и убивал ВСЕХ NPC в Living подряд.
+-- Поиск лейр-босса.
 --
--- Три ступени, от точной к эвристике:
---   1) имя ровно "Boss"  — так было в оригинальном message.txt;
---   2) имя содержит "boss";
---   3) объект, которого НЕ БЫЛО в Living до вызова Done — то есть только что
---      заспавненный. Это ловит босса с любым именем и никогда не хватает
---      старого NPC, потому что baseline снимается перед спавном.
-local function snapshotLiving()
-    local set = {}
-    local L = living()
-    if L then
-        for _, m in ipairs(L:GetChildren()) do set[m] = true end
-    end
-    return set
-end
-
-local function findLairBoss(baseline)
+-- ЖЕЛЕЗНОЕ ПРАВИЛО: только Workspace.Living.Boss. Никаких эвристик.
+-- В Workspace.Living лежат МИРОВЫЕ боссы (Jotaro Over Heaven, JohnnyJoestar,
+-- Alternate Jotaro Part 4) — те самые, что в Boss Farm. Любая попытка
+-- «угадать» босса по имени или по факту появления хватает их, и фарм
+-- уезжает из лейра в обычный мир убивать всё подряд.
+--
+-- Оригинальный message.txt верил ровно в имя "Boss" — и был прав.
+local function findLairBoss()
     local L = living()
     if not L then return nil end
 
-    local function alive(m)
-        local h = m:FindFirstChildOfClass("Humanoid")
-        local r = m:FindFirstChild("HumanoidRootPart")
-        return h and r and h.Health > 0
-    end
-
-    -- 1. каноническое имя
     local b = L:FindFirstChild("Boss")
-    if b and alive(b) then return b end
+    if not b then return nil end
 
-    -- 2. имя содержит "boss"
-    for _, m in ipairs(L:GetChildren()) do
-        if string.find(string.lower(m.Name), "boss", 1, true) and alive(m) then
-            return m
-        end
-    end
+    local h = b:FindFirstChildOfClass("Humanoid")
+    if not h or h.Health <= 0 then return nil end
 
-    -- 3. только то, что появилось после спавна
-    if baseline then
-        for _, m in ipairs(L:GetChildren()) do
-            if not baseline[m] and alive(m) and not Players:GetPlayerFromCharacter(m) then
-                return m
-            end
-        end
-    end
-
-    return nil
+    return b
 end
 
 -- ── настройки фармов (общие, как в оригинале) ─────────────────────────────
@@ -849,13 +819,11 @@ local function startLairFarm()
                 break
             end
 
-            -- 1. дёргаем Done, пока не появится босс (троттлинг внутри TriggerLair).
-            -- baseline снимаем ДО первого Done: всё, что появится после, — босс.
-            local baseline = snapshotLiving()
+            -- 1. дёргаем Done, пока в Living не появится Boss (троттлинг в TriggerLair)
             local t0 = os.clock()
             local warned = false
 
-            while StartLairFarming and not findLairBoss(baseline) and os.clock() - t0 < 40 do
+            while StartLairFarming and not findLairBoss() and os.clock() - t0 < 40 do
                 TriggerLair()
                 task.wait(jitter(0.9, 1.5))
 
@@ -871,7 +839,7 @@ local function startLairFarm()
                             end
                         end
                     end
-                    notify("Lair: boss not found. Living = "
+                    notify("Lair: no Living.Boss. Living = "
                         .. (#names > 0 and table.concat(names, ", ") or "empty"), 8)
                 end
             end
@@ -880,7 +848,7 @@ local function startLairFarm()
             if ShortPause then task.wait(PauseTimer) end
 
             -- 2. бой. Позиция — ДО атаки, иначе босс успевает отойти.
-            local boss = findLairBoss(baseline)
+            local boss = findLairBoss()
             while StartLairFarming and boss do
                 pcall(function()
                     holdPosition(boss, LairDistance, Underneath)
@@ -1661,23 +1629,28 @@ function SUR.npcs(radius)
 end
 
 -- Выбор лейр-NPC: по имени (частичное совпадение) или ближайшего.
-function SUR.selectLair(fragment)
+-- radius обязателен: без него можно было зацепить NPC в другой части карты
+-- и уехать телепортом из лейра в обычный мир.
+function SUR.selectLair(fragment, radius)
     local nf = npcFolder()
     if not nf then return false, "no Map.NPCs" end
 
-    local pick, pickDist = nil, math.huge
+    radius = tonumber(radius) or 250
     local p = hrp()
+    if not p then return false, "no character" end
+
+    local pick, pickDist = nil, math.huge
 
     for _, v in ipairs(nf:GetChildren()) do
         local root = v:FindFirstChild("HumanoidRootPart")
         local okName = (not fragment) or string.find(string.lower(v.Name), string.lower(fragment), 1, true)
         if root and okName and v:FindFirstChild("Done") then
-            local d = p and (p.Position - root.Position).Magnitude or 0
-            if d < pickDist then pick, pickDist = v, d end
+            local d = (p.Position - root.Position).Magnitude
+            if d <= radius and d < pickDist then pick, pickDist = v, d end
         end
     end
 
-    if not pick then return false, "no match" end
+    if not pick then return false, "no match within " .. radius .. " studs" end
 
     local head = pick:FindFirstChild("Head")
     local main = head and head:FindFirstChild("Main")

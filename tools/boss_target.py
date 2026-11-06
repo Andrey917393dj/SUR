@@ -106,22 +106,31 @@ def main():
     else:
         print("  OK    bossAlive = 'Boss'")
 
-    # --- case 3: boss under a non-canonical name --------------------------
-    # only reachable with a baseline snapshot, so state() alone must NOT
-    # pick up a random new NPC. This asserts the guard stays strict.
+    # --- case 3: a world boss with a non-canonical name must NOT be picked --
+    # Living also holds world bosses (Jotaro Over Heaven, JohnnyJoestar, ...).
+    # The farm must ignore them completely — otherwise it leaves the lair and
+    # teleports into the open world to chew on whatever it finds.
+    lua.eval("""
+        function(mock)
+            local living = mock.workspace:FindFirstChild("Living")
+            local b = living:FindFirstChild("Boss")
+            if b then b.Parent = nil end
+        end
+    """)(mock)
+
     lua_table2 = lua.table()
     row = lua.table()
-    row["name"] = "ShadowDio"
+    row["name"] = "Jotaro Over Heaven"
     row["hp"] = 5000
     lua_table2[1] = row
     setup(mock, lua_table2)
 
     got = boss_alive()
-    if got not in (None, "Boss"):
-        failures.append(f"case 3: non-boss name picked without baseline: {got!r}")
-        print(f"  FAIL  bossAlive = {got!r}  (expected 'Boss' or nil)")
+    if got is not None:
+        failures.append(f"case 3: world boss '{got}' was treated as the lair boss")
+        print(f"  FAIL  bossAlive = {got!r}  (expected nil)")
     else:
-        print(f"  OK    bossAlive = {got!r}")
+        print("  OK    bossAlive = nil  (world boss ignored)")
 
     print()
     if failures:
