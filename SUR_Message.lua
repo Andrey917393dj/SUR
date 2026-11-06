@@ -1498,16 +1498,17 @@ CreateTextBox("Pause Length", "Lair Farm", {}, function(Input)
 end)
 
 local StartLairFarming = false
-CreateToggle("Begin Lair Farm", "Lair Farm", function()
-    StartLairFarming = not StartLairFarming
-    if not StartLairFarming then return end
 
+-- Тело вынесено в функцию: тем же путём фарм запускается из консоли
+-- (getgenv().SUR.lairStart), не имитируя клик по тогглу.
+local function startLairFarm()
+    if StartLairFarming then return true end
     if not SelectedLairNPC then
         notify("You Are Missing A Step! Please Check Tutorial Then Re-Enable!")
-        StartLairFarming = false
-        return
+        return false
     end
 
+    StartLairFarming = true
     sessionStart = os.clock()
     nextTriggerAt = 0
 
@@ -1548,6 +1549,15 @@ CreateToggle("Begin Lair Farm", "Lair Farm", function()
             task.wait(jitter(0.4, 0.9))
         end
     end)
+    return true
+end
+
+CreateToggle("Begin Lair Farm", "Lair Farm", function()
+    if StartLairFarming then
+        StartLairFarming = false
+    else
+        startLairFarm()
+    end
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
@@ -2236,3 +2246,140 @@ pcall(function()
 end)
 print("[Arctic SUR] loaded | stand=" .. standName() .. " | attri=" .. standAttri()
       .. " | moves=" .. #moveset())
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- SUR CONTROL API
+-- Пульт для агента/консоли. UI не трогает, меню не меняет — только дёргает
+-- те же функции, что и кнопки. Нужен, чтобы фарм можно было поднять без
+-- кликов по тогглам.
+-- ══════════════════════════════════════════════════════════════════════════
+local SUR = {}
+getgenv().SUR = SUR
+
+function SUR.state()
+    local p = hrp()
+    return {
+        player    = LP.Name,
+        level     = (function()
+            local d = LP:FindFirstChild("Data")
+            local l = d and d:FindFirstChild("Level")
+            return l and l.Value or nil
+        end)(),
+        place     = game.PlaceId,
+        stand     = standName(),
+        attri     = standAttri(),
+        moves     = #moveset(),
+        position  = p and { X = p.Position.X, Y = p.Position.Y, Z = p.Position.Z } or nil,
+        lairNPC   = SelectedLairNPCText,
+        lairOn    = StartLairFarming,
+        instant   = InstantBossKill,
+        underneath= Underneath,
+        bossAlive = (function()
+            local b = findLairBoss()
+            return b and b.Name or nil
+        end)(),
+    }
+end
+
+-- Список NPC вокруг: имя, дистанция, есть ли Done/QuestDone.
+function SUR.npcs(radius)
+    local p = hrp()
+    local nf = npcFolder()
+    local out = {}
+    if not (p and nf) then return out end
+    for _, v in ipairs(nf:GetChildren()) do
+        local root = v:FindFirstChild("HumanoidRootPart")
+        if root then
+            local d = (p.Position - root.Position).Magnitude
+            if d <= (radius or 400) then
+                out[#out + 1] = {
+                    name    = v.Name,
+                    dist    = math.floor(d),
+                    done    = v:FindFirstChild("Done") ~= nil,
+                    quest   = v:FindFirstChild("QuestDone") ~= nil,
+                }
+            end
+        end
+    end
+    table.sort(out, function(a, b) return a.dist < b.dist end)
+    return out
+end
+
+-- Выбор лейр-NPC: по имени (частичное совпадение) или ближайшего.
+function SUR.selectLair(fragment)
+    local nf = npcFolder()
+    if not nf then return false, "no Map.NPCs" end
+
+    local pick, pickDist = nil, math.huge
+    local p = hrp()
+
+    for _, v in ipairs(nf:GetChildren()) do
+        local root = v:FindFirstChild("HumanoidRootPart")
+        local okName = (not fragment) or string.find(string.lower(v.Name), string.lower(fragment), 1, true)
+        if root and okName and v:FindFirstChild("Done") then
+            local d = p and (p.Position - root.Position).Magnitude or 0
+            if d < pickDist then pick, pickDist = v, d end
+        end
+    end
+
+    if not pick then return false, "no match" end
+
+    local head = pick:FindFirstChild("Head")
+    local main = head and head:FindFirstChild("Main")
+    local txt  = main and main:FindFirstChild("Text")
+
+    SelectedLairNPC = pick
+    SelectedLairNPCText = (txt and txt.Text) or pick.Name
+    setNote("Selected Lair NPC:", "Selected Lair NPC: " .. SelectedLairNPCText)
+    return true, SelectedLairNPCText
+end
+
+function SUR.underneath(on)
+    Underneath = (on ~= false)
+    return Underneath
+end
+
+function SUR.instantKill(on)
+    InstantBossKill = (on == true)
+    return InstantBossKill
+end
+
+function SUR.lairStart()
+    return startLairFarm()
+end
+
+function SUR.lairStop()
+    StartLairFarming = false
+    return true
+end
+
+-- Диагностика живого клиента: что реально лежит в Living и в Map.NPCs.
+function SUR.scan()
+    local L = living()
+    local out = { living = {}, npcFolders = {}, playerGui = {} }
+
+    if L then
+        for _, m in ipairs(L:GetChildren()) do
+            local h = m:FindFirstChildOfClass("Humanoid")
+            out.living[#out.living + 1] = {
+                name  = m.Name,
+                human = h ~= nil,
+                hp    = h and h.Health or nil,
+                max   = h and h.MaxHealth or nil,
+                root  = m:FindFirstChild("HumanoidRootPart") ~= nil,
+            }
+        end
+    end
+
+    local nf = npcFolder()
+    if nf then
+        for _, v in ipairs(nf:GetChildren()) do
+            out.npcFolders[#out.npcFolders + 1] = {
+                name = v.Name,
+                done = v:FindFirstChild("Done") ~= nil,
+            }
+        end
+    end
+
+    return out
+end
