@@ -1281,20 +1281,65 @@ return function(mock, source, originalControls)
         cleanErrors(); unload()
     end)
 
-    test("Entry phase cannot inherit a respawned local character", function()
+    test("Character replacement stops as respawning and the order restarts on a live character", function()
         fresh(); purgeProviders()
         local _,_,done=provider("ExplicitLair",0,0,0)
         local env=mock.env
+        local requests=0
+        local replacement, replacementHum
         done.FireServer=function()
+            requests=requests+1
+            if requests>1 then return end
             env.task.delay(0.05,function()
-                local replacement=npc("RespawnedPlayer",10000,0,0)
+                replacement, replacementHum=npc("RespawnedPlayer",10000,0,0)
+                replacementHum.Health=0
                 player().Character=replacement
                 npc("Boss",10010,0,0)
             end)
         end
         env.SUR.selectLair("ExplicitLair",15); env.SUR.lairStart(); advance(2)
-        expect(not env.SUR.state().lairOn,"entry inherited another local character")
-        expect(env.SUR.state().lairStopReason=="character_changed","respawn stopped without explicit reason")
+        expect(not env.SUR.state().lairOn,"respawning worker kept running without a live character")
+        expect(env.SUR.state().lairStopReason=="respawning","character replacement was not reported as respawning")
+        expect(indicator("Begin Lair Farm","Lair Farm"),"respawning order left the toggle OFF")
+        expect(#env.SUR.diagnostics().jobs==0,"respawning worker did not release its job")
+        replacementHum.Health=100
+        advance(1)
+        expect(env.SUR.state().lairOn,"order was not restarted once a live character existed")
+        expect(env.SUR.state().lairPhase=="fight","restarted order did not acquire the exact Boss")
+        cleanErrors(); unload()
+    end)
+
+    test("Respawn restarts are bounded and the order finally stays OFF", function()
+        local env=fresh(); purgeProviders()
+        npc("Boss",10,0,0)
+        local char=player().Character
+        expect(env.SUR.lairStart(),"in-place start rejected")
+        advance(0.5)
+        for i=1,22 do
+            char.Humanoid.Health=0
+            advance(0.6)
+            char.Humanoid.Health=100
+            advance(0.8)
+            if i==1 then expect(env.SUR.state().lairOn,"first respawn did not restart the order") end
+        end
+        expect(not env.SUR.state().lairOn and not indicator("Begin Lair Farm","Lair Farm"),"restart bound was not enforced")
+        cleanErrors(); unload()
+    end)
+
+    test("Explicit OFF during the respawn wait is never overridden by the auto-restart", function()
+        local env=fresh(); purgeProviders()
+        npc("Boss",10,0,0)
+        local char=player().Character
+        expect(env.SUR.lairStart(),"in-place start rejected")
+        advance(0.5)
+        char.Humanoid.Health=0
+        advance(0.6)
+        expect(env.SUR.state().lairStopReason=="respawning","death did not enter the respawn wait")
+        env.SUR.lairStop(); advance(0.1)
+        expect(not env.SUR.state().lairOn and not indicator("Begin Lair Farm","Lair Farm"),"user OFF did not cancel the wait")
+        char.Humanoid.Health=100
+        advance(4)
+        expect(not env.SUR.state().lairOn and not indicator("Begin Lair Farm","Lair Farm"),"auto-restart overrode an explicit OFF")
         cleanErrors(); unload()
     end)
 
@@ -1520,24 +1565,25 @@ return function(mock, source, originalControls)
         return env, origin, done, function() return requests, attacks end, made, madeHum, madeRoot
     end
 
-    test("Instant ON keeps the exact farm ON and attacks without a local HP write", function()
+    test("Instant ON writes local HP once, keeps the exact farm ON and keeps attacking", function()
         local env, origin, done, counts, boss, h = transferredLair({instant = true})
         local requests, attacks = counts()
-        expect(h.Health == 100, "client wrote HP locally instead of sending real input")
+        expect(h.Health == 0, "local HP=0 write did not land on the exact target")
         expect(env.SUR.state().lairOn and indicator("Begin Lair Farm", "Lair Farm"), "Instant deliberately switched the farm OFF")
         expect(env.SUR.state().bossAlive == "Boss", "exact target dropped from the arena")
         expect(attacks > 0, "combat never sent input")
         expect(env.SUR.state().lairPhase == "fight", "fight phase was not retained")
         expect(requests == 1, "combat started another entry request")
+        expect(env.SUR.state().lairLocalZeroOwned == true, "owned zero was not recorded for the exact target")
         advance(42)
         local afterRequests, afterAttacks = counts()
-        expect(env.SUR.state().lairOn, "combat was mistaken for completed Boss/reacquisition timeout")
+        expect(env.SUR.state().lairOn, "owned zero was mistaken for target removal")
         expect(afterRequests == 1 and afterAttacks > attacks, "combat stopped or repeated provider request")
-        expect(h.Health == 100 and boss.Parent == mock.workspace.Living, "local HP was written or the target destroyed")
+        expect(h.Health == 0 and boss.Parent == mock.workspace.Living, "same instance was revived or dropped")
         cleanErrors(); unload()
     end)
 
-    test("Instant ON never writes local HP and keeps one input stream", function()
+    test("Instant ON rejects a throwing local HP write without retrying it in a loop", function()
         local writes, destructive = 0, 0
         local env, origin, done, counts, boss, h = transferredLair({instant = true, prepare = function(_, hp)
             local mt = getmetatable(hp); local setter = mt.__newindex
@@ -1550,14 +1596,18 @@ return function(mock, source, originalControls)
         end})
         local _, attacks = counts()
         expect(env.SUR.state().lairOn and h.Health == 100, "combat stopped on a live target")
-        expect(writes == 0 and destructive == 0, "local probe or destructive fallback was used")
+        expect(writes == 1, "local HP write was attempted " .. writes .. " times on one target")
+        expect(destructive <= 2, "destructive fallback repeated " .. destructive .. " times")
+        expect(env.SUR.state().lairLocalZeroOwned == false, "rejected write was recorded as an owned zero")
         expect(attacks > 0, "no real input was sent")
+        local attempts, fallbacks = writes, destructive
         advance(3)
-        expect(writes == 0 and destructive == 0, "same instance was probed locally")
+        expect(writes == attempts and destructive == fallbacks, "same instance was probed again")
+        expect(attacks > 0 and env.SUR.state().lairOn, "real attacks stopped after the rejected write")
         cleanErrors(); unload()
     end)
 
-    test("Health rebound neither rewrites HP nor blocks the same-target resume", function()
+    test("Health rebound keeps one local write and the same-target resume", function()
         local writes = 0
         local env, origin, done, counts, boss, h = transferredLair({instant = true, prepare = function(_, hp)
             local mt = getmetatable(hp); local setter = mt.__newindex
@@ -1566,13 +1616,15 @@ return function(mock, source, originalControls)
                 return setter(target, key, value)
             end
         end})
+        expect(h.Health == 0 and writes == 1, "first exact target was not written exactly once")
         h.Health = 63
         advance(1)
         expect(env.SUR.state().lairOn and h.Health == 63, "rebound stopped combat or rewrote HP")
+        expect(env.SUR.state().lairLocalZeroOwned == false, "rebound kept the owned zero")
         env.SUR.instantKill(false); env.SUR.instantKill(true)
         env.SUR.lairStop(); expect(env.SUR.lairStart(), "same-target resume rejected after rebound")
         advance(1)
-        expect(h.Health == 63 and writes == 0, "resume wrote HP on the same Humanoid")
+        expect(h.Health == 63 and writes == 1, "resume repeated the local write on the same Humanoid")
         cleanErrors(); unload()
     end)
 
@@ -1591,19 +1643,23 @@ return function(mock, source, originalControls)
         cleanErrors(); unload()
     end)
 
-    test("Resume accepts unstreamed selected origin and its own physically present local zero", function()
-        local env, origin, done, counts, boss, h = transferredLair({instant = true, unstream = true})
+    test("Resume accepts an unstreamed selected origin and its own local zero", function()
+        local env, origin, done, counts, boss, h = transferredLair({instant = true})
+        expect(h.Health == 0 and env.SUR.state().lairLocalZeroOwned == true, "local zero was not written to the exact target")
+        origin.Parent = nil
+        local _, before = counts()
         env.SUR.lairStop(); advance(0.1)
         expect(env.SUR.lairStart(), "unstreamed origin/own zero blocked exact captured resume")
         advance(1)
         local requests, attacks = counts()
-        expect(env.SUR.state().lairOn and h.Health == 100 and attacks > 0, "resume lost target or wrote HP")
+        expect(env.SUR.state().lairOn and h.Health == 0, "resume lost the owned-zero target or revived it")
+        expect(env.SUR.state().lairLocalZeroOwned == true and attacks > before, "resume dropped the owned zero or stopped attacking")
         expect(requests == 1, "resume sent extra Done")
         cleanErrors(); unload()
     end)
 
     test("External zero is never reused as an owned zero; a fresh exact Boss is captured", function()
-        local env, origin, done, counts, boss, h = transferredLair({instant = true})
+        local env, origin, done, counts, boss, h = transferredLair()
         env.SUR.lairStop()
         h.Health = 65; h.Health = 0
         expect(env.SUR.lairStart(), "fresh entry after an external death was rejected")
@@ -1612,6 +1668,7 @@ return function(mock, source, originalControls)
         expect(requests == 2, "external zero did not produce a fresh selected entry request")
         expect(env.SUR.state().lairOn and env.SUR.state().lairPhase == "fight", "fresh entry did not acquire a live target")
         expect(h.Health == 0, "dead instance was rewritten as a live target")
+        expect(env.SUR.state().lairLocalZeroOwned == false, "external zero was inherited as an owned zero")
         expect(env.SUR.diagnostics().lair.context.targetHealth > 0, "dead target was reused as a live target")
         cleanErrors(); unload()
     end)
@@ -1736,7 +1793,8 @@ return function(mock, source, originalControls)
         mock.workspace.Map.NPCs.ExplicitLair.HumanoidRootPart.CFrame=env.CFrame.new(10000,0,0)
         advance(43)
         expect(requests == 1, "local zero skipped initial request or sent another request")
-        expect(env.SUR.state().lairOn and h.Health == 100, "combat stopped or wrote local HP near origin")
+        expect(env.SUR.state().lairOn and h.Health == 0, "combat stopped or the owned zero was revived near origin")
+        expect(env.SUR.state().lairLocalZeroOwned == true, "owned zero was dropped for the origin provider")
         cleanErrors(); unload()
     end)
 
@@ -1787,7 +1845,7 @@ return function(mock, source, originalControls)
             local _, after = counts()
             expect(not env.SUR.state().lairOn and env.SUR.state().lairStopReason == "boss_changed", "identity change bypassed the " .. change .. " guard")
             expect(before == after, "input continued after exact target identity changed")
-            expect(h.Health == 100, "identity change wrote local HP")
+            expect(h.Health == 0, "identity change revived or rewrote the owned zero")
             cleanErrors(); unload()
         end
     end)
@@ -1856,7 +1914,7 @@ return function(mock, source, originalControls)
         cleanErrors(); unload()
     end)
 
-    test("Reacquiring a restored exact model never writes local HP", function()
+    test("Reacquiring a restored exact model does not repeat the local write", function()
         local writes=0
         local env, origin, done, counts, boss, h = transferredLair({instant=true,prepare=function(_,hp)
             local mt=getmetatable(hp); local setter=mt.__newindex
@@ -1865,13 +1923,15 @@ return function(mock, source, originalControls)
                 return setter(target,key,value)
             end
         end})
+        expect(h.Health==0 and writes==1,"first exact target was not written exactly once")
         boss.Parent=nil
         local other, otherHum=npc("Boss",10020,0,0)
         advance(2)
         other:Destroy(); h.Health=75; boss.Parent=mock.workspace.Living
+        local before=writes
         advance(2)
         expect(env.SUR.state().lairOn and env.SUR.state().lairPhase=="fight","restored exact model was not reacquired")
-        expect(h.Health==75 and writes==0,"reacquisition wrote local HP")
+        expect(h.Health==75 and writes==before,"restored exact model was written again")
         cleanErrors(); unload()
     end)
 
@@ -1925,7 +1985,7 @@ return function(mock, source, originalControls)
         cleanErrors(); unload()
     end)
 
-    test("Resume then OFF gets a fresh expiry without a local HP write", function()
+    test("Resume then OFF gets a fresh expiry without repeating the local write", function()
         local writes=0
         local env, origin, done, counts, boss, h = transferredLair({instant=true,prepare=function(_,hp)
             local mt=getmetatable(hp); local setter=mt.__newindex
@@ -1934,6 +1994,7 @@ return function(mock, source, originalControls)
                 return setter(target,key,value)
             end
         end})
+        expect(h.Health==0 and writes==1,"first exact target was not written exactly once")
         env.SUR.lairStop(); advance(50)
         expect(env.SUR.lairStart(),"valid resume rejected")
         advance(0.5)
@@ -1942,7 +2003,7 @@ return function(mock, source, originalControls)
         advance(0.5)
         expect(env.SUR.state().lairOn and env.SUR.state().bossAlive=="Boss","resumed context lost its exact target")
         expect(counts()==1,"resume sent another entry request")
-        expect(writes==0 and h.Health==100,"resume wrote local HP")
+        expect(writes==1 and h.Health==0,"resume repeated the local write")
         cleanErrors(); unload()
     end)
 
@@ -1982,12 +2043,12 @@ return function(mock, source, originalControls)
             if packet.State=="Begin" and packet.Type==env.Enum.UserInputType.MouseButton1 then attacks=attacks+1 end
         end
         env.SUR.instantKill(true); expect(env.SUR.lairStart(),"in-place start rejected")
-        advance(1); expect(h.Health==100 and writes==0,"in-place start wrote local HP")
+        advance(1); expect(h.Health==0 and writes==1,"in-place start did not write the exact target once")
         local before=attacks
         env.SUR.lairStop(); expect(env.SUR.lairStart(),"in-place resume rejected")
         advance(1)
         expect(env.SUR.state().lairOn and env.SUR.state().bossAlive=="Boss","in-place resume lost the exact target")
-        expect(attacks>before and writes==0,"in-place resume did not resume real attacks")
+        expect(attacks>before and writes==1,"in-place resume stopped attacking or repeated the local write")
         cleanErrors(); unload()
     end)
 

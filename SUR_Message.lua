@@ -1775,7 +1775,10 @@ local function bossFarm(modelName, label)
                 if boss and h and h.Health > 0 and not Players:GetPlayerFromCharacter(boss) then
                     while jobActive(job) and boss.Parent == L and h.Health > 0 do
                         setAimTarget(boss)
-                        if holdPosition(boss, BossDistance, BossUnderneath, job) then attackStep(job) end
+                        if holdPosition(boss, BossDistance, BossUnderneath, job) then
+                            killTarget(boss)
+                            attackStep(job)
+                        end
                         if not waitActive(jitter(STEALTH.AttackMin, STEALTH.AttackMax), job) then break end
                     end
                 end
@@ -1912,6 +1915,8 @@ CreateTextBox("Pause Length", "Lair Farm", {}, function(Input)
 end)
 
 local StartLairFarming = false
+local LairRestarts = 0
+local LairRestartToken = { cancelled = false }
 local LairState = {
     phase = "idle", stopReason = nil, detail = nil, anchor = nil, origin = nil,
     entrySent = false, entryAt = nil, arrival = nil, target = nil, targetRoot = nil, targetHum = nil,
@@ -1989,6 +1994,8 @@ end
 local function stopLairFarm(reason, detail)
     reason = reason or "user_off"
     StartLairFarming = false
+    -- Явный OFF отменяет и ожидание респавна: приказ снят пользователем.
+    if reason == "user_off" and LairRestartToken then LairRestartToken.cancelled = true end
     if reason == "user_off" and LairState.context and LairState.context.arrival and lairExact(LairState.context) then
         if not LairState.context.resumeUntil then
             LairState.context.resumeUntil = math.min(os.clock() + 120, LairState.context.deadline)
@@ -2019,8 +2026,13 @@ Runtime.onMovementChanged = function(name)
     if name ~= "lair" and LairState.context and not Runtime.jobs.lair then clearLairContext() end
 end
 
-local function startLairFarm()
+local function startLairFarm(isRestart)
     if StartLairFarming and Runtime.jobs.lair then return true end
+    if not isRestart then
+        -- Ручной запуск открывает новый бюджет перезапусков.
+        LairRestarts = 0
+        LairRestartToken = { cancelled = false }
+    end
     local p, h, character = hrp(), hum(), char()
     if not Runtime.alive or not (p and h and h.Health > 0) then
         clearLairContext()
@@ -2104,6 +2116,29 @@ local function startLairFarm()
             lairStatus("stopped", job.cancelReason or "cancelled", "Lair worker cancelled")
         end
         SetToggle("Begin Lair Farm", "Lair Farm", false)
+        -- Смерть и респавн не отменяют приказ: ждём живой персонаж и снова
+        -- включаем тот же фарм, вместо того чтобы оставить переключатель OFF.
+        if Runtime.alive and (job.cancelReason == "respawning" or job.cancelReason == "character_changed")
+            and LairRestarts < 20 then
+            LairRestarts = LairRestarts + 1
+            local token = LairRestartToken
+            SetToggle("Begin Lair Farm", "Lair Farm", true)
+            runAsync(function()
+                local waited = 0
+                while Runtime.alive and not token.cancelled and waited < 90 do
+                    local p2, h2 = hrp(), hum()
+                    if p2 and h2 and h2.Health > 0 then break end
+                    if not waitActive(0.5, nil) then return end
+                    waited = waited + 0.5
+                end
+                -- Отмена пользователем во время ожидания имеет приоритет.
+                if token.cancelled then
+                    SetToggle("Begin Lair Farm", "Lair Farm", false)
+                    return
+                end
+                if Runtime.alive and not Runtime.jobs.lair and not StartLairFarming then startLairFarm(true) end
+            end)
+        end
     end, function(job)
         context.movementRevision = Runtime.movementRevision
         local function exit(reason, text)
@@ -2127,8 +2162,16 @@ local function startLairFarm()
             if not jobActive(job) or LairState.context ~= context then return false end
             if os.clock() >= context.deadline then return exit("session_limit", "session limit reached") end
             if context.provider and SelectedLairNPC ~= context.provider then return exit("provider_changed", "selected NPC changed") end
-            if char() ~= character or hrp() ~= p or hum() ~= h then return exit("character_changed", "character changed") end
-            if not p.Parent or not h.Parent or h.Health <= 0 then return exit("character_unavailable", "no live character") end
+            if char() ~= character or hrp() ~= p or hum() ~= h then
+                job.cancelReason = "respawning"
+                lairStatus("stopped", "respawning", "Character replaced; waiting for respawn")
+                return false
+            end
+            if not p.Parent or not h.Parent or h.Health <= 0 then
+                job.cancelReason = "respawning"
+                lairStatus("stopped", "respawning", "Character died; waiting for respawn")
+                return false
+            end
             if context.movementRevision ~= Runtime.movementRevision then return exit("movement_changed", "movement ownership changed") end
             return true
         end
@@ -2233,9 +2276,13 @@ local function startLairFarm()
                         -- удары после неё не регистрируются. Поэтому вместо
                         -- фальшивого нуля — плотная серия настоящих ударов.
                         probe.attempted, probe.at, probe.beforeHP, probe.writing = true, os.clock(), targetHum.Health, false
-                        probe.ownedZero = false
                         probe.untilAt = probe.at
-                        lairStatus("fight", nil, "Instant ON: fast real attacks, no local HP write")
+                        -- Старые версии убивали именно так; возвращаем запись
+                        -- HP=0 как основную попытку и продолжаем настоящие удары,
+                        -- если клиентская запись не дала нуля.
+                        probe.ownedZero = killTarget(boss) == true
+                        lairStatus("fight", nil, probe.ownedZero and "Instant: local HP=0 written; attacks continue"
+                            or "Instant: local write rejected; real attacks only")
                     end
                     if not probe.lastHP then probe.lastHP, probe.lastHPAt = targetHum.Health, os.clock() end
                     if os.clock() - probe.lastHPAt >= 1 then
