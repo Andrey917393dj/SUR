@@ -1,0 +1,12 @@
+# Preserve archived bytes for the SHA-256 manifest.
+legacy/** -text -whitespace
+# Canonical current build and test files remain LF on Windows checkouts.
+/SUR_Message.lua text eol=lf
+/SUR_Message.txt text eol=lf
+/src/** text eol=lf
+/tools/** text eol=lf
+/docs/** text eol=lf
+/README.md text eol=lf
+/requirements-dev.txt text eol=lf
+/.gitignore text eol=lf
+/.gitattributes text eol=lf

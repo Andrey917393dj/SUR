@@ -1,8 +1,7 @@
--- ═══════════════════════════════════════════════════════════════
---  ARCTIC SUR  —  message.txt port (single file)
---  Same menus, same buttons, working internals.
---  UI library embedded. No HttpGet, no external dependency.
--- ═══════════════════════════════════════════════════════════════
+-- Built by Olivia — https://discord.gg/ojailbreaks
+-- ARCTIC SUR — message.txt port (single file)
+-- Original menus retained. UI embedded; no external downloads.
+-- Offline checks do not prove server damage, rewards or anti-cheat behavior.
 
 -- ============================================================
 -- Arctic UI Library (Lib.txt) — FIXED VERSION
@@ -13,12 +12,124 @@
 -- ============================================================
 
 -- ══ module scope: Start() fills these, API functions read them ══
-local ScreenGui, Frame, Hotbar, CloseButton, TitleLabel, Buttons, Handler, Menus
+local ScreenGui, Frame, Hotbar, CloseButton, MinimizeButton, TitleLabel, Buttons, Handler, Menus
 local DefaultColor = Color3.fromRGB(124, 106, 255)
 local TweenServ = game:GetService("TweenService")
 local UIS       = game:GetService("UserInputService")
+local UIConnections = {}
+local ToggleStates = {}
+local UIBusy = {}
+local UIThreads = {}
+local UIClosed = false
+local UIGeneration = 0
+local UIConnectionOwners = {}
+local UIConnectionsByOwner = {}
+local UIDestroy
 
-function Start(A, B)
+local function UIReport(label, err)
+    warn("[Arctic SUR] " .. tostring(label) .. ": " .. tostring(err))
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "Arctic", Text = tostring(label) .. ": " .. tostring(err), Duration = 5,
+        })
+    end)
+end
+
+local function UIDisconnect(connection)
+    if not connection then return end
+    pcall(function() connection:Disconnect() end)
+    UIConnections[connection] = nil
+    local owner = UIConnectionOwners[connection]
+    UIConnectionOwners[connection] = nil
+    local owned = owner and UIConnectionsByOwner[owner]
+    if owned then owned[connection] = nil end
+end
+
+local function UIForget(owner)
+    local owned = UIConnectionsByOwner[owner]
+    if owned then
+        local connections = {}
+        for connection in pairs(owned) do connections[#connections + 1] = connection end
+        for _, connection in ipairs(connections) do UIDisconnect(connection) end
+        UIConnectionsByOwner[owner] = nil
+    end
+    for _, states in pairs(ToggleStates) do
+        for name, state in pairs(states) do if state.owner == owner then states[name] = nil end end
+    end
+end
+
+local function UIConnect(event, callback, owner)
+    local generation = UIGeneration
+    local connection = event:Connect(function(...)
+        if UIClosed or generation ~= UIGeneration then return end
+        local ok, err = pcall(callback, ...)
+        if not ok and not UIClosed and generation == UIGeneration then UIReport("UI", err) end
+    end)
+    UIConnections[connection] = true
+    if owner then
+        UIConnectionOwners[connection] = owner
+        if not UIConnectionsByOwner[owner] then
+            UIConnectionsByOwner[owner] = {}
+            local destroying = owner.Destroying:Connect(function() UIForget(owner) end)
+            UIConnections[destroying] = true
+            UIConnectionOwners[destroying] = owner
+            UIConnectionsByOwner[owner][destroying] = true
+        end
+        UIConnectionsByOwner[owner][connection] = true
+    end
+    return connection
+end
+
+local function UICall(callback, ...)
+    if UIClosed or type(callback) ~= "function" or UIBusy[callback] then return false end
+    local generation = UIGeneration
+    local thread = coroutine.running()
+    UIThreads[thread] = true
+    UIBusy[callback] = true
+    local ok, result = pcall(callback, ...)
+    UIBusy[callback] = nil
+    UIThreads[thread] = nil
+    if generation ~= UIGeneration or UIClosed then return false end
+    if not ok then UIReport("Action", result) end
+    return ok, result
+end
+
+local function SetToggle(Name, MenuName, value)
+    local states = ToggleStates[MenuName]
+    local state = states and states[Name]
+    if state then
+        state.value = value == true
+        if state.paint then state.paint(state.value) end
+    end
+    return value == true
+end
+
+UIDestroy = function()
+    if UIClosed then return end
+    UIClosed = true
+    UIGeneration = UIGeneration + 1
+    for connection in pairs(UIConnections) do pcall(function() connection:Disconnect() end) end
+    UIConnections, UIConnectionOwners, UIConnectionsByOwner = {}, {}, {}
+    ToggleStates, UIBusy = {}, {}
+    for thread in pairs(UIThreads) do
+        if thread ~= coroutine.running() and task.cancel then pcall(task.cancel, thread) end
+    end
+    UIThreads = {}
+    local gui = ScreenGui
+    ScreenGui = nil
+    Frame, Hotbar, CloseButton, MinimizeButton, TitleLabel, Buttons, Handler, Menus = nil, nil, nil, nil, nil, nil, nil, nil
+    pcall(function() if gui then gui:Destroy() end end)
+    local g = getgenv and getgenv()
+    if g and g.ArcticScreenGui == gui then g.ArcticScreenGui = nil end
+end
+
+local function Start(A, B)
+    -- Reinjection must stop the old runtime, not merely delete its window.
+    local g = getgenv and getgenv()
+    if g and type(g.SUR_unload) == "function" then pcall(g.SUR_unload) end
+    if ScreenGui then UIDestroy() end
+    UIGeneration = UIGeneration + 1
+    UIClosed = false
     local IgnoreDuplicates = false
 
     -- FIX: was pcall(function() if B["ColorTheme"]... end) which silently
@@ -33,11 +144,11 @@ function Start(A, B)
     end
 
     if not IgnoreDuplicates then
-        for _, v in pairs(game:GetService("CoreGui"):GetChildren()) do
-            if v.Name == A then
-                v:Destroy()
+        pcall(function()
+            for _, v in ipairs(game:GetService("CoreGui"):GetChildren()) do
+                if v.Name == A and v:IsA("ScreenGui") then v:Destroy() end
             end
-        end
+        end)
     end
 
     -- ── UI Construction ──────────────────────────────────────
@@ -45,6 +156,7 @@ function Start(A, B)
     Frame        = Instance.new("Frame")
     Hotbar       = Instance.new("Frame")
     CloseButton  = Instance.new("ImageButton")
+    MinimizeButton = Instance.new("ImageButton")
     TitleLabel   = Instance.new("TextLabel")
     local UICorner     = Instance.new("UICorner")
     Buttons      = Instance.new("Frame")
@@ -55,18 +167,30 @@ function Start(A, B)
     local UIListLayout = Instance.new("UIListLayout")
 
     ScreenGui.Name = A
-    local function getSafeGuiParent()
-        if gethui then
-            local ok, res = pcall(gethui)
-            if ok and res then return res end
-        end
-        local cg = game:GetService("CoreGui")
-        local ok = pcall(function() return cg.Name end)
-        if ok then return cg end
-        return game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+    ScreenGui.ResetOnSpawn = false
+    local function tryParent(parent)
+        if not parent then return false end
+        return pcall(function() ScreenGui.Parent = parent end)
     end
-    local guiParent = getSafeGuiParent()
-    ScreenGui.Parent = guiParent
+    local parented = false
+    if gethui then
+        local ok, parent = pcall(gethui)
+        if ok then parented = tryParent(parent) end
+    end
+    if not parented then
+        local ok, parent = pcall(function() return game:GetService("CoreGui") end)
+        if ok then parented = tryParent(parent) end
+    end
+    if not parented then
+        local playerGui = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui", 5)
+        parented = tryParent(playerGui)
+    end
+    if not parented then error("No writable GUI parent") end
+    if not IgnoreDuplicates then
+        for _, other in ipairs(ScreenGui.Parent:GetChildren()) do
+            if other ~= ScreenGui and other.Name == A and other:IsA("ScreenGui") then other:Destroy() end
+        end
+    end
     pcall(function() getgenv().ArcticScreenGui = ScreenGui end)
     ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
@@ -82,6 +206,7 @@ function Start(A, B)
     Hotbar.BorderSizePixel = 0
     Hotbar.Size = UDim2.new(0, 501, 0, 27)
 
+    CloseButton.Name = "CloseButton"
     CloseButton.Parent = Hotbar
     CloseButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
     CloseButton.BackgroundTransparency = 1.000
@@ -89,6 +214,17 @@ function Start(A, B)
     CloseButton.Position = UDim2.new(0.944111764, 0, 0.111111104, 0)
     CloseButton.Size = UDim2.new(0, 20, 0, 20)
     CloseButton.Image = "rbxassetid://3944676352"
+
+    -- minimize: hides the window only. Close kills the whole script.
+    MinimizeButton.Name = "MinimizeButton"
+    MinimizeButton.Parent = Hotbar
+    MinimizeButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    MinimizeButton.BackgroundTransparency = 1.000
+    MinimizeButton.BorderSizePixel = 0
+    MinimizeButton.Position = UDim2.new(0.893218, 0, 0.111111104, 0)
+    MinimizeButton.Size = UDim2.new(0, 20, 0, 20)
+    MinimizeButton.Image = "rbxassetid://3944680095"
+
 
     TitleLabel.Parent = Hotbar
     TitleLabel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
@@ -157,41 +293,55 @@ function Start(A, B)
     end
 
     -- FIX: drag on Hotbar only (was on whole Frame which ate clicks on content)
-    Hotbar.InputBegan:Connect(function(input)
+    UIConnect(Hotbar.InputBegan, function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
             dragging  = true
             dragStart = input.Position
             startPos  = Frame.Position
-            input.Changed:Connect(function()
+            local ended
+            ended = UIConnect(input.Changed, function()
                 if input.UserInputState == Enum.UserInputState.End then
                     dragging = false
+                    UIDisconnect(ended)
                 end
             end)
         end
     end)
 
-    Hotbar.InputChanged:Connect(function(input)
+    UIConnect(Hotbar.InputChanged, function(input)
         if input.UserInputType == Enum.UserInputType.MouseMovement
         or input.UserInputType == Enum.UserInputType.Touch then
             dragInput = input
         end
     end)
 
-    UIS.InputChanged:Connect(function(input)
+    UIConnect(UIS.InputChanged, function(input)
         if input == dragInput and dragging then
             updateDrag(input)
         end
     end)
 
-    CloseButton.MouseButton1Down:Connect(function()
-        Frame.Visible = false
+    -- CLOSE = full unload: stop every farm loop, then destroy the GUI.
+    -- Hiding it (the old behaviour) left the farms running in the dark.
+    UIConnect(CloseButton.MouseButton1Down, function()
+        pcall(function()
+            local g = getgenv and getgenv()
+            if g and g.SUR_unload then g.SUR_unload() end
+        end)
+        UIDestroy()
     end)
 
-    -- Toggle UI: default J; override with getgenv().ArcticUiHotkey = "Semicolon" etc. (Enum.KeyCode name)
-    UIS.InputBegan:Connect(function(input, gameProcessed)
-        if gameProcessed then return end
-        local key = Enum.KeyCode.J
+    -- MINIMIZE = hide only
+    UIConnect(MinimizeButton.MouseButton1Down, function()
+        if Frame and ScreenGui and ScreenGui.Parent then Frame.Visible = false end
+    end)
+
+    -- Toggle UI: default L; override with getgenv().ArcticUiHotkey = "Semicolon" etc. (Enum.KeyCode name)
+    UIConnect(UIS.InputBegan, function(input, gameProcessed)
+        if gameProcessed or not (Frame and ScreenGui and ScreenGui.Parent) then return end
+        if UIS:GetFocusedTextBox() then return end
+        local key = Enum.KeyCode.L
         pcall(function()
             local g = getgenv and getgenv() or nil
             local name = g and g.ArcticUiHotkey
@@ -204,32 +354,30 @@ function Start(A, B)
         end
     end)
 
+    if g then g.SUR_unload = UIDestroy end
     -- ── Helper: build a colour-tracking indicator tween loop ──
 end
 
 local function MakeIndicatorLoop(indicator, getFlagFn)
-    task.spawn(function()
-        local tweenInf = TweenInfo.new(0.2)
-        local lastState = nil
-        while ScreenGui and ScreenGui.Parent do
-            local state = not not getFlagFn()
-            if state ~= lastState then
-                lastState = state
-                local target = state and DefaultColor or Color3.fromRGB(10, 10, 13)
-                TweenServ:Create(indicator, tweenInf, {BackgroundColor3 = target}):Play()
-            end
-            task.wait(0.1)
-        end
-    end)
+    -- State changes paint directly; no coroutine per toggle survives deletion.
+    local function paint()
+        if UIClosed or not indicator.Parent then return end
+        indicator.BackgroundColor3 = getFlagFn() and DefaultColor or Color3.fromRGB(10, 10, 13)
+    end
+    paint()
+    return paint
 end
 
 -- ── Public API functions ──────────────────────────────────
 
 -- Destroy an element inside the GUI by name (case-insensitive)
-function Destroy(Name)
+local function Destroy(Name)
+    if UIClosed or not ScreenGui then return end
     local lower = string.lower(Name)
     for _, v in pairs(ScreenGui:GetDescendants()) do
         if string.lower(v.Name) == lower then
+            UIForget(v)
+            for _, child in ipairs(v:GetDescendants()) do UIForget(child) end
             v:Destroy()
             return
         end
@@ -237,14 +385,15 @@ function Destroy(Name)
 end
 
 -- FIX: main script calls Delete() but lib only defined Destroy() — alias added
-function Delete(Name)
+local function Delete(Name)
     Destroy(Name)
 end
 
 -- FIX: EditString was called in main script but never defined in lib.
 -- Finds a Note element by its current name and renames both the container
 -- and the inner TextLabel text so the display updates correctly.
-function EditString(OldText, NewText)
+local function EditString(OldText, NewText)
+    if UIClosed or not ScreenGui then return end
     for _, v in pairs(ScreenGui:GetDescendants()) do
         if v.Name == OldText then
             v.Name = NewText
@@ -260,7 +409,9 @@ end
 
 -- FIX: Fill() was called in main script (Teleport TextBoxes) but never defined.
 -- Returns the full player name matching the given partial prefix (case-insensitive).
-function Fill(Partial)
+local function Fill(Partial)
+    Partial = tostring(Partial or ""):match("^%s*(.-)%s*$")
+    if Partial == "" then return Partial end
     local lower = string.lower(Partial)
     for _, player in pairs(game:GetService("Players"):GetPlayers()) do
         if string.lower(player.Name):sub(1, #Partial) == lower then
@@ -270,7 +421,9 @@ function Fill(Partial)
     return Partial  -- fallback: return as-is
 end
 
-function CreateMenu(Name)
+local function CreateMenu(Name)
+    if UIClosed or not Menus or not Handler then return end
+    ToggleStates[Name] = ToggleStates[Name] or {}
     local ScrollingFrame = Instance.new("ScrollingFrame")
     local MenuList       = Instance.new("UIListLayout")
 
@@ -285,6 +438,8 @@ function CreateMenu(Name)
     ScrollingFrame.ScrollBarThickness = 0
     ScrollingFrame.Visible = false
     ScrollingFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    ScrollingFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+    ScrollingFrame.ScrollBarThickness = 4
 
     MenuList.Parent = ScrollingFrame
     MenuList.HorizontalAlignment = Enum.HorizontalAlignment.Center
@@ -320,7 +475,7 @@ function CreateMenu(Name)
         TextButton.BackgroundColor3 = DefaultColor
     end
 
-    TextButton.MouseButton1Down:Connect(function()
+    UIConnect(TextButton.MouseButton1Down, function()
         for _, v in pairs(Menus:GetChildren()) do
             if v:IsA("ScrollingFrame") then
                 v.Visible = (v.Name == TextButton.Text)
@@ -331,10 +486,12 @@ function CreateMenu(Name)
                 b.BackgroundColor3 = (b == TextButton and DefaultColor or Color3.fromRGB(17, 17, 17))
             end
         end
-    end)
+    end, TextButton)
+    return ScrollingFrame
 end
 
-function CreateButton(Name, MenuName, Callback)
+local function CreateButton(Name, MenuName, Callback)
+    if UIClosed or not Menus then return end
     local Regular  = Instance.new("TextButton")
     local Corner   = Instance.new("UICorner")
     local BtnLabel = Instance.new("TextLabel")
@@ -366,12 +523,14 @@ function CreateButton(Name, MenuName, Callback)
     BtnLabel.TextSize = 12.000
     BtnLabel.TextXAlignment = Enum.TextXAlignment.Left
 
-    Regular.MouseButton1Down:Connect(function()
-        pcall(Callback)
-    end)
+    UIConnect(Regular.MouseButton1Down, function()
+        UICall(Callback)
+    end, Regular)
+    return Regular
 end
 
-function CreateTextBox(Name, MenuName, Options, Callback)
+local function CreateTextBox(Name, MenuName, Options, Callback)
+    if UIClosed or not Menus then return end
     Options = Options or {}
 
     local Container = Instance.new("TextButton")
@@ -425,21 +584,23 @@ function CreateTextBox(Name, MenuName, Options, Callback)
 
     -- FIX: was table.find(C, "AutoUpdate") which searches array values,
     -- not dict keys — correct check is Options["AutoUpdate"]
-    InputBox.FocusLost:Connect(function(enterPressed)
-        pcall(Callback, InputBox.Text)
-    end)
+    UIConnect(InputBox.FocusLost, function(enterPressed)
+        UICall(Callback, InputBox.Text)
+    end, Container)
     if Options["AutoUpdate"] then
-        InputBox:GetPropertyChangedSignal("Text"):Connect(function()
-            pcall(Callback, InputBox.Text)
-        end)
+        UIConnect(InputBox:GetPropertyChangedSignal("Text"), function()
+            UICall(Callback, InputBox.Text)
+        end, Container)
     else
-        Container.MouseButton1Down:Connect(function()
-            pcall(Callback, InputBox.Text)
-        end)
+        UIConnect(Container.MouseButton1Down, function()
+            UICall(Callback, InputBox.Text)
+        end, Container)
     end
+    return Container
 end
 
-function CreateToggle(Name, MenuName, Callback)
+local function CreateToggle(Name, MenuName, Callback)
+    if UIClosed or not Menus then return end
     local ToggleBtn   = Instance.new("TextButton")
     local CornerA     = Instance.new("UICorner")
     local ToggleLabel = Instance.new("TextLabel")
@@ -481,18 +642,27 @@ function CreateToggle(Name, MenuName, Callback)
     CornerB.CornerRadius = UDim.new(0, 2)
     CornerB.Parent = Indicator
 
-    local IsOn = false
+    local state = { value = false, owner = ToggleBtn }
+    ToggleStates[MenuName] = ToggleStates[MenuName] or {}
+    ToggleStates[MenuName][Name] = state
     -- FIX: was an always-running loop that tweened every task.wait() frame.
-    -- Now uses a shared helper that polls at 0.1s intervals — much less wasteful.
-    MakeIndicatorLoop(Indicator, function() return IsOn end)
+    -- Direct painting keeps the indicator in sync with automatic stops.
+    state.paint = MakeIndicatorLoop(Indicator, function() return state.value end)
 
-    ToggleBtn.MouseButton1Down:Connect(function()
-        IsOn = not IsOn
-        pcall(Callback)
-    end)
+    UIConnect(ToggleBtn.MouseButton1Down, function()
+        local requested = not state.value
+        local ok, actual = UICall(Callback, requested)
+        if ok then
+            local value = requested
+            if type(actual) == "boolean" then value = actual end
+            SetToggle(Name, MenuName, value)
+        end
+    end, ToggleBtn)
+    return ToggleBtn
 end
 
-function CreateNote(Text, MenuName)
+local function CreateNote(Text, MenuName)
+    if UIClosed or not Menus then return end
     local UseScaled = string.len(Text) >= 42
 
     local Container  = Instance.new("TextLabel")
@@ -526,9 +696,11 @@ function CreateNote(Text, MenuName)
 
     NoteCorner.CornerRadius = UDim.new(0, 2)
     NoteCorner.Parent = Container
+    return Container
 end
 
-function CreateTextBoxToggle(Name, MenuName, Options, Callback)
+local function CreateTextBoxToggle(Name, MenuName, Options, Callback)
+    if UIClosed or not Menus then return end
     Options = Options or {}
 
     local Container = Instance.new("TextButton")
@@ -589,26 +761,41 @@ function CreateTextBoxToggle(Name, MenuName, Options, Callback)
     CornerC.CornerRadius = UDim.new(0, 2)
     CornerC.Parent = Indicator
 
-    local IsOn = false
-    MakeIndicatorLoop(Indicator, function() return IsOn end)
+    local state = { value = false, owner = Container }
+    ToggleStates[MenuName] = ToggleStates[MenuName] or {}
+    ToggleStates[MenuName][Name] = state
+    state.paint = MakeIndicatorLoop(Indicator, function() return state.value end)
 
     -- FIX: was table.find(C, "AutoUpdate") — wrong for dict tables.
     if Options["AutoUpdate"] then
-        Container.MouseButton1Down:Connect(function()
-            IsOn = not IsOn
-        end)
-        InputBox:GetPropertyChangedSignal("Text"):Connect(function()
-            pcall(Callback, InputBox.Text)
-        end)
+        UIConnect(Container.MouseButton1Down, function()
+            local requested = not state.value
+            local ok, actual = UICall(Callback, InputBox.Text, requested)
+            if ok then
+                local value = requested
+                if type(actual) == "boolean" then value = actual end
+                SetToggle(Name, MenuName, value)
+            end
+        end, Container)
+        UIConnect(InputBox:GetPropertyChangedSignal("Text"), function()
+            UICall(Callback, InputBox.Text)
+        end, Container)
     else
-        Container.MouseButton1Down:Connect(function()
-            IsOn = not IsOn
-            pcall(Callback, InputBox.Text)
-        end)
+        UIConnect(Container.MouseButton1Down, function()
+            local requested = not state.value
+            local ok, actual = UICall(Callback, InputBox.Text, requested)
+            if ok then
+                local value = requested
+                if type(actual) == "boolean" then value = actual end
+                SetToggle(Name, MenuName, value)
+            end
+        end, Container)
     end
+    return Container
 end
 
-function CreateSearchBar(MenuName)
+local function CreateSearchBar(MenuName)
+    if UIClosed or not Menus then return end
     local SearchBar  = Instance.new("TextLabel")
     local CornerA    = Instance.new("UICorner")
     local SearchLbl  = Instance.new("TextLabel")
@@ -658,7 +845,7 @@ function CreateSearchBar(MenuName)
     -- FIX: original code created a fake LocalScript via Instance.new('LocalScript')
     -- which is completely non-functional in an executor (scripts can't run that way).
     -- Replaced with a direct signal connection that actually works.
-    SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    UIConnect(SearchBox:GetPropertyChangedSignal("Text"), function()
         local query      = string.lower(SearchBox.Text)
         local targetMenu = Menus[MenuName]
         if not targetMenu then return end
@@ -674,10 +861,12 @@ function CreateSearchBar(MenuName)
                 end
             end
         end
-    end)
+    end, SearchBar)
+    return SearchBar
 end
 
-function CreateNotification(Title, Text, Options)
+local function CreateNotification(Title, Text, Options)
+    if UIClosed then return end
     local Sound    = "rbxassetid://4835664238"
     local Duration = 5
 
@@ -740,11 +929,10 @@ end
 --  11. Биржа: Item захватывался замыканием в task.spawn — покупка могла уйти
 --      не тем предметом. Теперь локальная копия.
 --
--- УЯЗВИМОСТЬ (сохранена намеренно, это ядро Lair Farm):
+-- Оригинальная попытка мгновенного убийства оставлена за переключателем:
 --      Workspace.Living.Boss.Humanoid.Health = 0
---   Клиент пишет Health напрямую, сервер принимает репликацию → лейр-босс
---   умирает мгновенно, без боя. В оригинале строка стояла безусловно; здесь
---   она за тогглом "Instant Boss Kill (HP = 0)", по умолчанию ВКЛЮЧЕН.
+--   Это клиентская запись свойства. Серверный урон и награда ею не доказаны.
+--   Переключатель "Instant Boss Kill (HP = 0)" по умолчанию ВЫКЛЮЧЕН.
 -- ══════════════════════════════════════════════════════════════════════════
 
 local Players           = game:GetService("Players")
@@ -753,10 +941,131 @@ local VirtualUser       = game:GetService("VirtualUser")
 local HttpService       = game:GetService("HttpService")
 local PathfindingService= game:GetService("PathfindingService")
 local Workspace         = game.Workspace
+local UIS               = game:GetService("UserInputService")
 
 local LP = Players.LocalPlayer
 
 Start("Arctic")
+
+-- Every asynchronous action belongs to this injection and one generation.
+-- Turning OFF invalidates sleeping workers before another ON can start.
+local Runtime = {
+    alive = true, jobs = {}, connections = {}, cleanup = {},
+    errors = {}, movement = nil, tasks = {}, heldInputs = {}, heldPrompts = {}, idleRelease = nil,
+    equipment = nil,
+}
+
+local function recordError(label, err)
+    local text = tostring(label) .. ": " .. tostring(err)
+    Runtime.errors[#Runtime.errors + 1] = text
+    if #Runtime.errors > 20 then table.remove(Runtime.errors, 1) end
+    UIReport(label, err)
+end
+
+local function jobActive(job)
+    return Runtime.alive and (not job or (job.active and Runtime.jobs[job.name] == job))
+end
+
+local function runAsync(callback, ...)
+    if not Runtime.alive then return nil end
+    local args = { ... }
+    local thread = task.spawn(function()
+        if not Runtime.alive then return end
+        local ok, err = pcall(callback, table.unpack(args))
+        Runtime.tasks[coroutine.running()] = nil
+        if not ok and Runtime.alive then recordError("Task", err) end
+    end)
+    if thread and coroutine.status(thread) ~= "dead" then Runtime.tasks[thread] = true end
+    return thread
+end
+
+local function runConnect(event, callback)
+    local connection = event:Connect(function(...)
+        if not Runtime.alive then return end
+        local thread = coroutine.running()
+        Runtime.tasks[thread] = true
+        local ok, err = pcall(callback, ...)
+        Runtime.tasks[thread] = nil
+        if not ok and Runtime.alive then recordError("Event", err) end
+    end)
+    for i = #Runtime.connections, 1, -1 do
+        if not Runtime.connections[i].Connected then table.remove(Runtime.connections, i) end
+    end
+    Runtime.connections[#Runtime.connections + 1] = connection
+    return connection
+end
+
+local function addCleanup(callback)
+    Runtime.cleanup[#Runtime.cleanup + 1] = callback
+end
+
+local function jobStop(name)
+    local job = Runtime.jobs[name]
+    if not job then return end
+    job.active = false
+    if Runtime.equipment and Runtime.equipment.job == job then Runtime.equipment = nil end
+    for held in pairs(Runtime.heldInputs) do
+        if held.job == job then
+            pcall(function()
+                held.remote:FireServer({ State = "End", Key = held.key, Type = held.utype })
+            end)
+            Runtime.heldInputs[held] = nil
+        end
+    end
+    for prompt, owner in pairs(Runtime.heldPrompts) do
+        if owner == job then
+            pcall(function() prompt:InputHoldEnd() end)
+            Runtime.heldPrompts[prompt] = nil
+        end
+    end
+    Runtime.jobs[name] = nil
+    for connection in pairs(job.connections or {}) do pcall(function() connection:Disconnect() end) end
+    job.connections = {}
+    if Runtime.movement == job then Runtime.movement = nil end
+    if job.onStop then
+        local ok, err = pcall(job.onStop)
+        if not ok then recordError(name .. " stop", err) end
+    end
+    local thread = job.thread
+    if thread and thread ~= coroutine.running() and task.cancel then
+        pcall(task.cancel, thread)
+        Runtime.tasks[thread] = nil
+    end
+end
+
+local function jobStart(name, moves, onStop, callback)
+    local existing = Runtime.jobs[name]
+    if existing and jobActive(existing) then return existing end
+    jobStop(name)
+    if not Runtime.alive then return nil end
+    if moves and Runtime.movement then jobStop(Runtime.movement.name) end
+    local job = { name = name, active = true, onStop = onStop, connections = {} }
+    Runtime.jobs[name] = job
+    if moves then Runtime.movement = job end
+    job.thread = runAsync(function()
+        local ok, err = pcall(callback, job)
+        if not ok and jobActive(job) then recordError(name, err) end
+        if Runtime.jobs[name] == job then jobStop(name) end
+    end)
+    return job
+end
+
+local function waitActive(seconds, job)
+    local deadline = os.clock() + math.max(0, seconds or 0)
+    repeat
+        if not jobActive(job) then return false end
+        task.wait(math.min(0.1, math.max(0, deadline - os.clock())))
+    until os.clock() >= deadline
+    return jobActive(job)
+end
+
+local function finiteNumber(value, minimum, maximum)
+    local n = tonumber(value)
+    if not n or n ~= n or n == math.huge or n == -math.huge then return nil end
+    if minimum and n < minimum then return nil end
+    if maximum and n > maximum then return nil end
+    return n
+end
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- CORE
@@ -784,6 +1093,7 @@ local function npcFolder()
 end
 
 local function notify(text, dur)
+    if not Runtime.alive then return end
     pcall(function()
         CreateNotification("Arctic", tostring(text), { Duration = dur or 4 })
     end)
@@ -792,10 +1102,10 @@ end
 -- Подписи-статусы ("Selected Lair NPC: ...") ищем по префиксу, а не по
 -- точному имени: EditString ломался, как только текст расходился на символ.
 local function setNote(prefix, newText)
-    local gui = getgenv and getgenv().ArcticScreenGui
-    if not gui then return false end
+    local gui = ScreenGui
+    if not Runtime.alive or not (gui and gui.Parent) then return false end
     for _, d in ipairs(gui:GetDescendants()) do
-        if d:IsA("TextLabel") and d.Name ~= prefix
+        if d:IsA("TextLabel") and d.Text ~= ""
            and string.sub(tostring(d.Text), 1, #prefix) == prefix then
             d.Text = newText
             return true
@@ -829,27 +1139,26 @@ local function standEvents()
     return c and c:FindFirstChild("StandEvents")
 end
 
-local function press(key, hold)
+local function press(key, hold, job)
+    if not jobActive(job) then return false end
     local se = standEvents()
-    if not se then return false end
-    local input = se:FindFirstChild("Input")
-    if not input then return false end
-
+    local input = se and se:FindFirstChild("Input")
+    if not (input and input:IsA("RemoteEvent")) then return false end
     local isMouse = (key == Enum.UserInputType.MouseButton1
                   or key == Enum.UserInputType.MouseButton2)
     local utype = isMouse and key or Enum.UserInputType.Keyboard
-
+    local packetKey = isMouse and Enum.KeyCode.Unknown or key
+    local held = { remote = input, key = packetKey, utype = utype, job = job }
+    Runtime.heldInputs[held] = true
     local ok = pcall(function()
-        input:FireServer({ State = "Begin", Key = key, Type = utype })
+        input:FireServer({ State = "Begin", Key = packetKey, Type = utype })
     end)
-    if not ok then return false end
-
-    if hold and hold > 0 then task.wait(hold) end
-
+    if ok and hold and hold > 0 then waitActive(hold, job) end
     pcall(function()
-        input:FireServer({ State = "End", Key = key, Type = utype })
+        input:FireServer({ State = "End", Key = packetKey, Type = utype })
     end)
-    return true
+    Runtime.heldInputs[held] = nil
+    return ok and jobActive(job)
 end
 
 local function moveset()
@@ -859,22 +1168,47 @@ local function moveset()
     local ok, res = pcall(function() return info:InvokeServer("Moveset") end)
     if not (ok and type(res) == "table") then return {} end
 
-    -- игра может вернуть как массив имён клавиш, так и словарь — приводим к массиву
-    local out = {}
-    for k, v in pairs(res) do
-        if type(k) == "number" then
-            out[#out + 1] = v
-        else
-            out[#out + 1] = tostring(k)
+    -- Accept only known keys, not arbitrary move names mapped to E.
+    local out, seen, tables = {}, {}, {}
+    local function add(value)
+        local name
+        if type(value) == "string" then
+            name = value:match("([%w]+)$")
+        elseif typeof(value) == "EnumItem" then
+            name = value.Name
+        elseif type(value) == "table" then
+            if tables[value] then return end
+            tables[value] = true
+            add(value.Key or value.key)
+            return
+        end
+        if name == "MouseButton1" then name = "M1" end
+        if name == "MouseButton2" then name = "M2" end
+        if name and KEYMAP[name] and not seen[name] then
+            seen[name] = true
+            out[#out + 1] = name
         end
     end
+    for k, v in pairs(res) do
+        if type(k) == "number" then add(v) else add(k); add(v) end
+    end
+    table.sort(out)
     return out
 end
 
-local function standName()
+local function standCode()
     local d = LP:FindFirstChild("Data")
     local s = d and d:FindFirstChild("Stand")
-    if s then return tostring(s.Value) end
+    return s and tostring(s.Value) or nil
+end
+
+local function standName()
+    local code = standCode()
+    if code then
+        local convert = ReplicatedStorage:FindFirstChild("StandNameConvert")
+        local entry = convert and convert:FindFirstChild(code)
+        return entry and entry:IsA("StringValue") and tostring(entry.Value) or code
+    end
     -- фолбэк на HUD, как в оригинале
     local ok, txt = pcall(function()
         return LP.PlayerGui.PlayerGUI.ingame.Stats.StandName.Name_.TextLabel.Text
@@ -891,32 +1225,31 @@ local function standAttri()
 end
 
 local function hasStand()
-    local n = standName()
-    return n ~= "" and n ~= "None"
+    local n = standCode()
+    return n ~= nil and n ~= "" and n ~= "None"
 end
 
 -- Оригинал проверял Character.Aura.Value и падал, если Aura нет.
 -- Троттлинг: Q имеет кулдаун 1.5с, спамить его каждый тик бессмысленно.
-local lastSummon = 0
-local function summonIfNeeded()
+local lastSummon = -math.huge
+local function summonIfNeeded(job)
     local c = char()
     if not c then return end
     if c:FindFirstChild("Stand") then return end
-    if tick() - lastSummon < 1.7 then return end
-    lastSummon = tick()
-    press(Enum.KeyCode.Q, 0.1)
+    if not jobActive(job) or os.clock() - lastSummon < 1.7 then return end
+    lastSummon = os.clock()
+    press(Enum.KeyCode.Q, 0.1, job)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════
--- STEALTH LAYER
--- Античит здесь СЕРВЕРНЫЙ (в клиентском дампе его нет). Он реагирует не на
--- сам факт скрипта, а на пакетный паттерн: CFrame-записи 7 раз в секунду,
--- нулевая скорость каждый тик, дёрганье RemoteEvent без задержки.
--- Всё ниже — про то, чтобы паттерн перестал быть похож на бота.
+-- FARM TIMING
+-- Ограничения частоты операций уменьшают повторные записи и запросы.
+-- По одному клиентскому дампу нельзя установить правила серверного античита.
+-- Эти интервалы не гарантируют обход проверок или отсутствие кика.
 -- ══════════════════════════════════════════════════════════════════════════
 local STEALTH = {
     RepositionGap  = 0.85,   -- мин. пауза между записями CFrame
-    RepositionDist = 12,     -- ближе — вообще не двигаемся
+    RepositionDist = 1,      -- допуск позиции; не игнорирует Underneath на 4 студa
     UnderDepth     = 3,      -- максимум, на сколько закапываемся под босса
     TriggerMin     = 2.6,    -- рандомный интервал дёрганья Done
     TriggerMax     = 4.4,
@@ -930,11 +1263,12 @@ local lastTriggerAt  = 0
 local nextTriggerAt  = 0
 local sessionStart   = 0
 
--- ЯДРО ЭКСПЛОЙТА. Пишем Health=0 с клиента — это и есть пакет, который
--- сервер видит как «Auto Lair Farm». Держим в pcall, с кулдауном и фолбэком.
-local lastKillAt = 0
+-- Клиентская попытка HP=0. Успех здесь означает только локальный Health.
+-- Репликация на сервер, награда и причина кика отдельно не подтверждены.
+local lastKillAt = -math.huge
 local function killTarget(model)
-    if not model then return false end
+    if not Runtime.alive or not (model and model.Parent) then return false end
+    if Players:GetPlayerFromCharacter(model) then return false end
     local h = model:FindFirstChildOfClass("Humanoid")
     if not h then return false end
     if os.clock() - lastKillAt < 0.35 then return false end
@@ -950,44 +1284,41 @@ end
 
 -- Позиционирование. Главное отличие от message.txt: двигаемся ТОЛЬКО когда
 -- реально отъехали, не чаще раза в 0.85с, и НЕ трогаем AssemblyLinearVelocity
--- (нулевая скорость каждый тик — самый тупой детект из возможных).
+-- Частые записи скорости не нужны для удержания позиции.
 -- Закапываемся максимум на UnderDepth, иначе проваливаемся под пол карты.
-local function holdPosition(model, distance, underneath)
-    local p = hrp()
-    if not (model and p) then return end
+local lastPositionModel, lastPositionDistance, lastPositionUnderneath
+local function holdPosition(model, distance, underneath, job)
+    local p, h = hrp(), hum()
+    if not jobActive(job) or not (model and model.Parent and p and h and h.Health > 0) then return false end
     local t = model:FindFirstChild("HumanoidRootPart")
-    if not t then return end
-
-    local want
-    if underneath then
-        local depth = math.min(tonumber(distance) or 4, STEALTH.UnderDepth)
-        want = CFrame.new(t.Position + Vector3.new(0, -depth, distance))
-    else
-        want = CFrame.new(t.Position + Vector3.new(0, 0, distance))
-    end
-
-    if (p.Position - want.Position).Magnitude < STEALTH.RepositionDist then return end
-    if os.clock() - lastReposition < STEALTH.RepositionGap then return end
-
+    if not (t and t:IsA("BasePart")) then return false end
+    distance = finiteNumber(distance, 0.5, 100) or 4
+    local depth = underneath and math.min(distance, STEALTH.UnderDepth) or 0
+    local want = t.CFrame * CFrame.new(0, -depth, distance)
+    local modeChanged = lastPositionModel ~= model or lastPositionDistance ~= distance or lastPositionUnderneath ~= underneath
+    local facing = (p.CFrame.LookVector - want.LookVector).Magnitude < 0.1
+    if not modeChanged and facing and (p.Position - want.Position).Magnitude < STEALTH.RepositionDist then return true end
+    if not modeChanged and os.clock() - lastReposition < STEALTH.RepositionGap then return false end
     lastReposition = os.clock()
-    pcall(function() p.CFrame = want end)
+    lastPositionModel, lastPositionDistance, lastPositionUnderneath = model, distance, underneath
+    local ok = pcall(function() p.CFrame = want end)
+    return ok and jobActive(job)
 end
 
--- Мягкий догон для дальних целей: одна перестановка на 1.2с, без цикла.
-local lastApproach = 0
-local function approach(model, distance)
+-- One bounded approach, never a guessed or stale NPC destination.
+local lastApproach = -math.huge
+local function approach(model, distance, job)
     local p = hrp()
-    if not (model and p) then return end
+    if not jobActive(job) or not (model and model.Parent and p) then return false end
     local t = model:FindFirstChild("HumanoidRootPart")
-    if not t then return end
+    if not t then return false end
     if (p.Position - t.Position).Magnitude <= distance then return true end
     if os.clock() - lastApproach < 1.2 then return false end
     lastApproach = os.clock()
-    pcall(function() p.CFrame = CFrame.new(t.Position + Vector3.new(0, 0, distance)) end)
-    return true
+    return pcall(function() p.CFrame = t.CFrame * CFrame.new(0, 0, distance) end)
 end
 
--- Рандомный разброс таймингов: ровный шаг — это подпись бота.
+-- Небольшой разброс интервалов ограничивает повторные действия.
 local function jitter(min, max)
     return min + math.random() * (max - min)
 end
@@ -1006,7 +1337,7 @@ local function findLairBoss()
     if not L then return nil end
 
     local b = L:FindFirstChild("Boss")
-    if not b then return nil end
+    if not b or Players:GetPlayerFromCharacter(b) then return nil end
 
     local h = b:FindFirstChildOfClass("Humanoid")
     if not h or h.Health <= 0 then return nil end
@@ -1019,67 +1350,92 @@ local AllMovesets   = {}
 local ClearMoves    = {}
 local UseCustomMoves = false
 
-local function attackStep()
-    summonIfNeeded()
+local function attackStep(job)
+    if not jobActive(job) then return false end
+    summonIfNeeded(job)
+    if not jobActive(job) then return false end
     if UseCustomMoves and #AllMovesets > 0 then
         local name = AllMovesets[math.random(1, #AllMovesets)]
-        press(KEYMAP[name] or Enum.KeyCode.E, 0.05)
-    else
-        press(Enum.UserInputType.MouseButton1, 0.03)
+        return press(KEYMAP[name], 0.05, job)
     end
+    return press(Enum.UserInputType.MouseButton1, 0.03, job)
 end
 
 -- ── предметы / экипировка ─────────────────────────────────────────────────
-local function useToolName(name)
-    local c, h = char(), hum()
-    if not (c and h) then return false end
-
-    local bp = backpack()
-    local tool = (bp and bp:FindFirstChild(name)) or c:FindFirstChild(name)
-    if not tool then
-        notify("No " .. tostring(name) .. " in inventory", 3)
-        return false
-    end
-
-    if tool.Parent == bp then
-        pcall(function() h:EquipTool(tool) end)
-        local equipped = c:WaitForChild(name, 3)
-        if equipped then tool = equipped end
-    end
-
-    task.wait(0.15)
-    pcall(function() tool:Activate() end)
-
-    local use = tool:FindFirstChild("Use")
-    if use and use:IsA("RemoteEvent") then
-        pcall(function() use:FireServer() end)
-    end
-
-    local ev = events()
-    local useItem = ev and ev:FindFirstChild("UseItem")
-    if useItem and useItem:IsA("RemoteEvent") then
-        pcall(function() useItem:FireServer() end)
-    end
-    return true
+local function equipmentAcquire(job)
+    local current = Runtime.equipment
+    if current then return nil end
+    local owner = { job = job, thread = coroutine.running() }
+    Runtime.equipment = owner
+    return owner
 end
 
-local function fireProximity(prompt)
-    if not prompt then return false end
-    if fireproximityprompt then
-        if pcall(fireproximityprompt, prompt) then return true end
-    end
-    -- фолбэк: удержание промпта вручную
-    local began = pcall(function() prompt:InputHoldBegin() end)
-    if began then
-        task.wait((tonumber(prompt.HoldDuration) or 0.5) + 0.05)
-        pcall(function() prompt:InputHoldEnd() end)
+local function equipmentRelease(owner)
+    if Runtime.equipment == owner then Runtime.equipment = nil end
+end
+addCleanup(function() Runtime.equipment = nil end)
+
+-- A consumable owns equipment until confirmation, cancellation or timeout.
+-- This also keeps Auto Umbrella from unequipping a delayed consumable.
+local function useToolName(name, job, beforeUse)
+    if not job and Runtime.movement then jobStop(Runtime.movement.name) end
+    local c, h, bp = char(), hum(), backpack()
+    if not jobActive(job) or not (c and h and h.Health > 0) then return false end
+    local tool = (bp and bp:FindFirstChild(name)) or c:FindFirstChild(name)
+    if not (tool and tool:IsA("Tool")) then notify("No " .. tostring(name) .. " in inventory", 3); return false end
+    local inherited = Runtime.equipment
+    local owned = inherited and inherited.job == job and inherited.thread == coroutine.running()
+    local owner = owned and inherited or equipmentAcquire(job)
+    if not owner then notify("Another item-use operation owns equipment", 3); return false end
+    local usesStandArrow = name == "Stand Arrow" or name == "Charged Arrow" or name == "Requiem Arrow" or name == "Kars Mask"
+    local removesStand = name == "Rokakaka" or name == "Rotten Rokakaka"
+    local hadStand = hasStand()
+    local initialStand = standCode()
+    local ok, used = pcall(function()
+        if tool.Parent == bp then h:EquipTool(tool) end
+        local equipDeadline = os.clock() + 3
+        while tool.Parent ~= c and jobActive(job) and char() == c and h.Health > 0 and os.clock() < equipDeadline do
+            if beforeUse and not beforeUse() then return false end
+            if not waitActive(0.05, job) then return false end
+        end
+        if not jobActive(job) or char() ~= c or h.Health <= 0 or tool.Parent ~= c then return false end
+        if beforeUse and not beforeUse() then return false end
+        local use = tool:FindFirstChild("Use")
+        local ev = events()
+        local useItem = ev and ev:FindFirstChild("UseItem")
+        if use and use:IsA("RemoteEvent") then use:FireServer(); return true end
+        tool:Activate()
+        if not jobActive(job) or char() ~= c or h.Health <= 0 then return false end
+        if useItem and useItem:IsA("RemoteEvent") then useItem:FireServer() end
         return true
+    end)
+    if ok and used == true and not owned and (usesStandArrow or removesStand) then
+        local deadline = os.clock() + 8
+        while Runtime.alive and Runtime.equipment == owner and char() == c and h.Health > 0 and os.clock() < deadline do
+            local changed = standCode() ~= initialStand or (removesStand and hadStand and not hasStand())
+                or (usesStandArrow and not hadStand and hasStand()) or tool.Parent == nil
+            if changed or not waitActive(0.1, job) then break end
+        end
     end
-    return false
+    if not owned then equipmentRelease(owner) end
+    if not ok then notify("Could not use " .. tostring(name) .. ": " .. tostring(used), 4); return false end
+    return used == true
+end
+
+local function fireProximity(prompt, job)
+    if not jobActive(job) or not (prompt and prompt.Parent and prompt:IsA("ProximityPrompt")) then return false end
+    if fireproximityprompt and pcall(fireproximityprompt, prompt) then return jobActive(job) end
+    local began = pcall(function() prompt:InputHoldBegin() end)
+    if not began then return false end
+    Runtime.heldPrompts[prompt] = job or true
+    local complete = waitActive((tonumber(prompt.HoldDuration) or 0.5) + 0.05, job)
+    pcall(function() prompt:InputHoldEnd() end)
+    Runtime.heldPrompts[prompt] = nil
+    return complete
 end
 
 local function webhookSend(url, payload)
-    if not url or url == "" then return false end
+    if not Runtime.alive or not url or url == "" then return false end
     local req = http_request or request or HttpPost or (syn and syn.request)
     if not req then return false end
     local body = HttpService:JSONEncode(payload)
@@ -1092,9 +1448,9 @@ end
 
 local function tpToCF(cf)
     local p = hrp()
-    if not (p and cf) then return false end
-    pcall(function() p.CFrame = cf end)
-    pcall(function() p.AssemblyLinearVelocity = Vector3.new(0, 0, 0) end)
+    if not Runtime.alive or not (p and cf) then return false end
+    local moved = pcall(function() p.CFrame = cf end)
+    if not moved then return false end
     local c = char()
     local st = c and c:FindFirstChild("Stand")
     local stRoot = st and st:FindFirstChild("HumanoidRootPart")
@@ -1150,40 +1506,46 @@ CreateButton("Use Rotten Rokakaka", "LocalPlayer", function()
 end)
 
 local AutoUmbrella = false
-CreateToggle("Auto Umbrella", "LocalPlayer", function()
-    AutoUmbrella = not AutoUmbrella
-    if not AutoUmbrella then return end
+CreateToggle("Auto Umbrella", "LocalPlayer", function(on)
+    AutoUmbrella = on == true
+    if not AutoUmbrella then jobStop("umbrella"); return false end
 
     -- FIX: цикл блокировал собственный колбэк; вынесен в task.spawn
-    task.spawn(function()
-        while AutoUmbrella do
-            pcall(function()
-                local c, h = char(), hum()
-                local bp = backpack()
-                if not (c and h and bp) then return end
-                if bp:FindFirstChild("Umbrella") and not c:FindFirstChild("Umbrella") then
-                    h:EquipTool(bp:FindFirstChild("Umbrella"))
-                end
-            end)
-            task.wait(0.35)
+    jobStart("umbrella", false, function()
+        AutoUmbrella = false
+        SetToggle("Auto Umbrella", "LocalPlayer", false)
+    end, function(job)
+        while jobActive(job) do
+            local c, h, bp = char(), hum(), backpack()
+            local tool = bp and bp:FindFirstChild("Umbrella")
+            if not Runtime.equipment and c and h and h.Health > 0 and tool and not c:FindFirstChild("Umbrella") then h:EquipTool(tool) end
+            if not waitActive(0.35, job) then break end
         end
     end)
+    return AutoUmbrella
 end)
 
 local AntiAFK = false
-CreateToggle("Anti AFK", "LocalPlayer", function()
-    AntiAFK = not AntiAFK
+CreateToggle("Anti AFK", "LocalPlayer", function(on)
+    AntiAFK = on == true
+    if not AntiAFK then jobStop("idle") end
+    return AntiAFK
 end)
 
-LP.Idled:Connect(function()
+runConnect(LP.Idled, function()
     if not AntiAFK then return end
     local cam = Workspace.CurrentCamera
     if not cam then return end
-    pcall(function()
+    jobStart("idle", false, function()
+        if Runtime.idleRelease then pcall(Runtime.idleRelease); Runtime.idleRelease = nil end
+    end, function(job)
+        Runtime.idleRelease = function() VirtualUser:Button2Up(Vector2.new(0, 0), cam.CFrame) end
         VirtualUser:Button2Down(Vector2.new(0, 0), cam.CFrame)
-        task.wait(1)
-        VirtualUser:Button2Up(Vector2.new(0, 0), cam.CFrame)
+        waitActive(1, job)
     end)
+end)
+addCleanup(function()
+    if Runtime.idleRelease then pcall(Runtime.idleRelease); Runtime.idleRelease = nil end
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
@@ -1193,36 +1555,39 @@ CreateMenu("Shops")
 CreateNote("Selling", "Shops")
 
 local SellKetchup = false
-CreateToggle("Auto Sell Ketchup", "Shops", function()
-    SellKetchup = not SellKetchup
-    if not SellKetchup then return end
-
+CreateToggle("Auto Sell Ketchup", "Shops", function(on)
+    SellKetchup = on == true
+    if not SellKetchup then jobStop("sell"); return false end
     local ev = events()
     local sell = ev and ev:FindFirstChild("SellKetchup")
-    if not sell then notify("SellKetchup remote missing", 3); return end
-
-    pcall(function() sell:FireServer("Lots") end)
-
-    task.spawn(function()
-        while SellKetchup do
-            pcall(function()
-                local bp = backpack()
-                if bp then bp:WaitForChild("Ketchup", 5) end
+    if not (sell and sell:IsA("RemoteEvent")) then
+        SellKetchup = false
+        notify("SellKetchup remote missing", 3)
+        return false
+    end
+    jobStart("sell", false, function()
+        SellKetchup = false
+        SetToggle("Auto Sell Ketchup", "Shops", false)
+    end, function(job)
+        while jobActive(job) do
+            local bp, c = backpack(), char()
+            if (bp and bp:FindFirstChild("Ketchup")) or (c and c:FindFirstChild("Ketchup")) then
                 sell:FireServer("Lots")
-            end)
-            task.wait(0.5)
+            end
+            if not waitActive(0.5, job) then break end
         end
     end)
+    return SellKetchup
 end)
 
 CreateNote("Autobuy Only Works For Level 200+", "Shops")
 
 local Amount = 0
 CreateTextBox("Count", "Shops", { CustomText = "Amount" }, function(A)
-    local n = tonumber(A)
-    if not n then return end
+    local n = finiteNumber(A, 1, 100000)
+    if not n then notify("Amount must be a positive finite number", 3); return end
     if n >= 1 then
-        Amount = n
+        Amount = math.floor(n)
         notify("Amount Set To : " .. tostring(Amount), 3)
     else
         notify("Please Set The Number Above 0+", 3)
@@ -1234,12 +1599,14 @@ local AllItems = { "Rokakaka", "New Rokakaka", "Requiem Arrow", "Stand Arrow", "
 -- FIX: Item захватывался замыканием внутри task.spawn (мог уйти не тот
 -- предмет), плюс падало на захардкоженном нике "polar_eXDAVH".
 local function buyFromStockMarket(itemName)
+    if Runtime.movement then jobStop(Runtime.movement.name) end
     local c, h = char(), hum()
     if not (c and h) then return false end
 
     local ev = events()
     local sm = ev and ev:FindFirstChild("SM_Event")
-    if not sm then notify("SM_Event missing", 3); return false end
+    if not (sm and sm:IsA("RemoteEvent")) then notify("SM_Event missing", 3); return false end
+    if Amount < 1 then notify("Set Count above 0 first", 3); return false end
 
     local nf = npcFolder()
     local market = nf and nf:FindFirstChild("StockMarket")
@@ -1247,14 +1614,14 @@ local function buyFromStockMarket(itemName)
 
     local oldPos = hrp() and hrp().CFrame
     if head then tpToCF(head.CFrame * CFrame.new(0, 3, 0)) end
-    task.wait(0.4)
+    if not waitActive(0.4) or char() ~= c then return false end
 
-    pcall(function() sm:FireServer("Buy", itemName, Amount) end)
-    task.wait(0.4)
+    local sent = pcall(function() sm:FireServer("Buy", itemName, Amount) end)
+    if not sent or not waitActive(0.4) then return false end
 
     local prompt = market and market:FindFirstChild("TalkToPrompt")
     if prompt then fireProximity(prompt) end
-    task.wait(0.4)
+    if not waitActive(0.4) or char() ~= c then return false end
 
     if oldPos then tpToCF(oldPos) end
 
@@ -1308,17 +1675,14 @@ CreateButton("Refresh Movesets", "Farm Settings", function()
         local name = tostring(keyName)
         if KEYMAP[name] then
             ClearMoves[#ClearMoves + 1] = name
-            task.spawn(function()
-                local on = false
-                CreateToggle(name, "Farm Settings", function()
-                    on = not on
-                    local at = table.find(AllMovesets, name)
-                    if on then
-                        if not at then AllMovesets[#AllMovesets + 1] = name end
-                    else
-                        if at then table.remove(AllMovesets, at) end
-                    end
-                end)
+            CreateToggle(name, "Farm Settings", function(on)
+                local at = table.find(AllMovesets, name)
+                if on then
+                    if not at then AllMovesets[#AllMovesets + 1] = name end
+                elseif at then
+                    table.remove(AllMovesets, at)
+                end
+                return on == true
             end)
         end
     end
@@ -1327,8 +1691,9 @@ CreateButton("Refresh Movesets", "Farm Settings", function()
     notify(#ClearMoves .. " moves listed", 4)
 end)
 
-CreateToggle("Use Custom Moves", "Farm Settings", function()
-    UseCustomMoves = not UseCustomMoves
+CreateToggle("Use Custom Moves", "Farm Settings", function(on)
+    UseCustomMoves = on == true
+    return UseCustomMoves
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
@@ -1339,48 +1704,42 @@ CreateNote("Settings", "Boss Farm")
 
 local BossDistance = 4
 CreateTextBox("Distance", "Boss Farm", {}, function(Input)
-    local n = tonumber(Input)
-    if n and n > 0 then BossDistance = n end
+    local n = finiteNumber(Input, 0.5, 100)
+    if n then BossDistance = n end
 end)
 
 local BossUnderneath = false
-CreateToggle("Underneath", "Boss Farm", function()
-    BossUnderneath = not BossUnderneath
+CreateToggle("Underneath", "Boss Farm", function(on)
+    BossUnderneath = on == true
+    return BossUnderneath
 end)
 
 -- Три тоггла ниже — один и тот же цикл. Оригинал копировал его трижды.
 local BossOn = {}
 
 local function bossFarm(modelName, label)
-    CreateToggle(label, "Boss Farm", function()
-        BossOn[modelName] = not BossOn[modelName]
-        if not BossOn[modelName] then return end
-
-        task.spawn(function()
-            while BossOn[modelName] do
+    CreateToggle(label, "Boss Farm", function(on)
+        local name = "boss:" .. modelName
+        BossOn[modelName] = on == true
+        if not BossOn[modelName] then jobStop(name); return false end
+        jobStart(name, true, function()
+            BossOn[modelName] = false
+            SetToggle(label, "Boss Farm", false)
+        end, function(job)
+            while jobActive(job) do
                 local L = living()
                 local boss = L and L:FindFirstChild(modelName)
-
-                if not boss then
-                    notify("Waiting for " .. modelName .. "...", 3)
-                    repeat
-                        task.wait(0.5)
-                        L = living()
-                        boss = L and L:FindFirstChild(modelName)
-                    until boss or not BossOn[modelName]
+                local h = boss and boss:FindFirstChildOfClass("Humanoid")
+                if boss and h and h.Health > 0 and not Players:GetPlayerFromCharacter(boss) then
+                    while jobActive(job) and boss.Parent == L and h.Health > 0 do
+                        if holdPosition(boss, BossDistance, BossUnderneath, job) then attackStep(job) end
+                        if not waitActive(jitter(STEALTH.AttackMin, STEALTH.AttackMax), job) then break end
+                    end
                 end
-
-                while BossOn[modelName] and boss and boss.Parent do
-                    pcall(function()
-                        holdPosition(boss, BossDistance, BossUnderneath)
-                        attackStep()
-                    end)
-                    task.wait(jitter(STEALTH.AttackMin, STEALTH.AttackMax))
-                end
-
-                if BossOn[modelName] then task.wait(0.5) end
+                if not waitActive(0.5, job) then break end
             end
         end)
+        return BossOn[modelName] == true
     end)
 end
 
@@ -1400,6 +1759,7 @@ end)
 
 local SelectedLairNPC
 local SelectedLairNPCText = "None"
+local stopLairSelection
 
 CreateButton("Select Lair NPC", "Lair Farm", function()
     local c, p = char(), hrp()
@@ -1411,7 +1771,8 @@ CreateButton("Select Lair NPC", "Lair Farm", function()
     local best, bestDist = nil, 15
     for _, v in ipairs(nf:GetChildren()) do
         local root = v:FindFirstChild("HumanoidRootPart")
-        if root then
+        local done = v:FindFirstChild("Done")
+        if root and done and done:IsA("RemoteEvent") then
             local d = (p.Position - root.Position).Magnitude
             if d < bestDist then best, bestDist = v, d end
         end
@@ -1428,6 +1789,7 @@ CreateButton("Select Lair NPC", "Lair Farm", function()
         local txt = main and main:FindFirstChild("Text")
         local pretty = (txt and txt.Text) or v.Name
 
+        if stopLairSelection then stopLairSelection() end
         SelectedLairNPC = v
         SelectedLairNPCText = pretty
         setNote("Selected Lair NPC:", "Selected Lair NPC: " .. pretty)
@@ -1438,150 +1800,180 @@ end)
 local LairDistance = 4
 CreateNote("Farming Position", "Lair Farm")
 CreateTextBox("Set Distance: ", "Lair Farm", { CustomText = "Default: 4" }, function(Input)
-    local n = tonumber(Input)
-    if n and n > 0 then LairDistance = n end
+    local n = finiteNumber(Input, 0.5, 100)
+    if n then LairDistance = n end
 end)
 
 local Underneath = false
-CreateToggle("Underneath", "Lair Farm", function()
-    Underneath = not Underneath
+CreateToggle("Underneath", "Lair Farm", function(on)
+    Underneath = on == true
+    return Underneath
 end)
 
 -- ЯДРО ЭКСПЛОЙТА: HP босса выставляется в 0 с клиента.
--- По умолчанию ВЫКЛЮЧЕН: именно этот пакет сервер ловит как
--- "Exploit Detected: Auto Lair Farm (267)". Включай осознанно.
+-- По умолчанию ВЫКЛЮЧЕН. В предыдущем прогоне наблюдался kick 267,
+-- но связь конкретной записи с серверной проверкой не установлена.
 local InstantBossKill = false
-CreateNote("Instant Kill = HP write = kick 267. Off by default.", "Lair Farm")
-CreateToggle("Instant Boss Kill (HP = 0)", "Lair Farm", function()
-    InstantBossKill = not InstantBossKill
+CreateNote("HP write is local; server kill unverified. Off by default.", "Lair Farm")
+CreateToggle("Instant Boss Kill (HP = 0)", "Lair Farm", function(on)
+    InstantBossKill = on == true
     notify("instant kill " .. (InstantBossKill and "ON" or "off"), 3)
+    return InstantBossKill
 end)
 
--- Дёрганье Done. В message.txt летело каждые 0.6с без проверки дистанции —
--- ровный метроном, по которому сервер и считает бота. Теперь: только рядом
--- с NPC, только раз в 2.6–4.4с, и с перестановкой, если отбежали.
-function TriggerLair(force)
-    if not SelectedLairNPC or not SelectedLairNPC.Parent then
-        notify("Error Grabbing Remote 2", 3)
-        return false
-    end
+local LairArenaRadius = 500
+-- Done is sent only to the explicitly selected NPC, while still in range.
+-- A client snapshot does not prove that any other NPC is a lair provider.
+local function selectedLairReady()
+    local nf = npcFolder()
+    local npc = SelectedLairNPC
+    local root = npc and npc:FindFirstChild("HumanoidRootPart")
+    local done = npc and npc:FindFirstChild("Done")
+    return npc and npc.Parent == nf and root and done and done:IsA("RemoteEvent")
+end
 
-    local done = SelectedLairNPC:FindFirstChild("Done")
-    if not (done and done:IsA("RemoteEvent")) then
-        notify("Error Grabbing Remote 2", 3)
-        return false
-    end
-
+local function TriggerLair(force, job)
+    if not jobActive(job) or not selectedLairReady() then return false end
+    local p, h = hrp(), hum()
     local root = SelectedLairNPC:FindFirstChild("HumanoidRootPart")
-    local p = hrp()
-    if root and p and (p.Position - root.Position).Magnitude > 25 then
-        approach(SelectedLairNPC, 6)
+    if not (p and h and h.Health > 0 and root) then return false end
+    if (p.Position - root.Position).Magnitude > 25 then
+        if job and (p.Position - root.Position).Magnitude <= LairArenaRadius then
+            approach(SelectedLairNPC, 6, job)
+        end
         return false
     end
-
-    if not force then
-        if os.clock() < nextTriggerAt then return false end
+    if not force and os.clock() < nextTriggerAt then return false end
+    local sent = pcall(function() SelectedLairNPC.Done:FireServer() end)
+    if sent then
+        lastTriggerAt = os.clock()
         nextTriggerAt = os.clock() + jitter(STEALTH.TriggerMin, STEALTH.TriggerMax)
     end
-    lastTriggerAt = os.clock()
-
-    pcall(function() done:FireServer() end)
-    return true
+    return sent
 end
 
 local ShortPause = false
-CreateToggle("Use Pausing", "Lair Farm", function()
-    ShortPause = not ShortPause
+CreateToggle("Use Pausing", "Lair Farm", function(on)
+    ShortPause = on == true
+    return ShortPause
 end)
 
 local PauseTimer = 1
 CreateTextBox("Pause Length", "Lair Farm", {}, function(Input)
-    local n = tonumber(Input)
-    if n and n >= 0 then PauseTimer = n end
+    local n = finiteNumber(Input, 0, 300)
+    if n then PauseTimer = n end
 end)
 
 local StartLairFarming = false
 
--- Тело вынесено в функцию: тем же путём фарм запускается из консоли
--- (getgenv().SUR.lairStart), не имитируя клик по тогглу.
+-- The existing exact Living.Boss can be used only in the current arena.
+-- Never follow it across the map or guess a world boss by a similar name.
+local function arenaBoss(anchor)
+    local L = living()
+    if not L then return nil end
+    local found
+    for _, b in ipairs(L:GetChildren()) do
+        if b.Name == "Boss" and not Players:GetPlayerFromCharacter(b) then
+            local h, root = b:FindFirstChildOfClass("Humanoid"), b:FindFirstChild("HumanoidRootPart")
+            if h and root and h.Health > 0 and (root.Position - anchor).Magnitude <= LairArenaRadius then
+                if found then return nil, "Several Boss models in arena; stopped" end
+                found = b
+            end
+        end
+    end
+    return found
+end
+
+local function stopLairFarm()
+    StartLairFarming = false
+    jobStop("lair")
+    SetToggle("Begin Lair Farm", "Lair Farm", false)
+end
+stopLairSelection = stopLairFarm
+
 local function startLairFarm()
-    if StartLairFarming then return true end
-    if not SelectedLairNPC then
+    if StartLairFarming and Runtime.jobs.lair then return true end
+    local p, h = hrp(), hum()
+    if not Runtime.alive or not (p and h and h.Health > 0) or not selectedLairReady() then
         notify("You Are Missing A Step! Please Check Tutorial Then Re-Enable!")
         return false
     end
-
+    local npcRoot = SelectedLairNPC.HumanoidRootPart
+    if (p.Position - npcRoot.Position).Magnitude > LairArenaRadius then
+        notify("Selected Lair NPC is in another area. Select the nearby NPC again.", 6)
+        return false
+    end
     StartLairFarming = true
-    sessionStart = os.clock()
-    nextTriggerAt = 0
-
-    task.spawn(function()
-        while StartLairFarming do
-            -- авто-стоп: бесконечная сессия — тоже сигнатура бота
-            if os.clock() - sessionStart > STEALTH.SessionMaxMin * 60 then
-                StartLairFarming = false
-                notify("Lair Farm: session limit reached, stopped.", 6)
+    sessionStart, nextTriggerAt = os.clock(), 0
+    local anchor = p.Position
+    local selectedProvider = SelectedLairNPC
+    jobStart("lair", true, function()
+        StartLairFarming = false
+        SetToggle("Begin Lair Farm", "Lair Farm", false)
+    end, function(job)
+        local deadline = sessionStart + STEALTH.SessionMaxMin * 60
+        local function active()
+            if not jobActive(job) then return false end
+            if os.clock() >= deadline then notify("Lair Farm: session limit reached, stopped.", 6); return false end
+            local root, humanoid = hrp(), hum()
+            if SelectedLairNPC ~= selectedProvider or not selectedLairReady()
+                or not (root and humanoid and humanoid.Health > 0)
+                or (root.Position - anchor).Magnitude > LairArenaRadius then return false end
+            return true
+        end
+        while active() do
+            local localRoot, localHum = hrp(), hum()
+            if not selectedLairReady() or not (localRoot and localHum and localHum.Health > 0) then
+                notify("Lair Farm: character or selected NPC unavailable; stopped.", 5)
                 break
             end
-
-            -- 1. дёргаем Done, пока в Living не появится Boss (троттлинг в TriggerLair)
-            local t0 = os.clock()
-            local warned = false
-
-            while StartLairFarming and not findLairBoss() and os.clock() - t0 < 40 do
-                TriggerLair()
-                task.wait(jitter(0.9, 1.5))
-
-                -- диагностика: если долго нет босса — один раз показать, что в Living
-                if not warned and os.clock() - t0 > 12 then
-                    warned = true
-                    local L = living()
-                    local names = {}
-                    if L then
-                        for _, m in ipairs(L:GetChildren()) do
-                            if m:FindFirstChildOfClass("Humanoid") then
-                                names[#names + 1] = m.Name
-                            end
-                        end
-                    end
-                    notify("Lair: no Living.Boss. Living = "
-                        .. (#names > 0 and table.concat(names, ", ") or "empty"), 8)
+            if (localRoot.Position - anchor).Magnitude > LairArenaRadius then
+                notify("Lair Farm: left selected arena; stopped.", 5)
+                break
+            end
+            local boss, reason = arenaBoss(anchor)
+            if reason then notify(reason, 5); break end
+            local started = os.clock()
+            while active() and not boss and os.clock() - started < 40 do
+                -- No teleport back to a distant provider when Boss disappears.
+                TriggerLair(false, job)
+                if not waitActive(jitter(0.9, 1.5), job) then break end
+                boss, reason = arenaBoss(anchor)
+                if reason then break end
+            end
+            if not active() then break end
+            if not boss then notify(reason or "Lair Farm: no Living.Boss in this arena; stopped.", 6); break end
+            if ShortPause and not waitActive(PauseTimer, job) then break end
+            if not active() then break end
+            local L = living()
+            local targetHum = boss:FindFirstChildOfClass("Humanoid")
+            while active() and boss.Parent == L and targetHum and targetHum.Health > 0 do
+                local targetRoot = boss:FindFirstChild("HumanoidRootPart")
+                if not targetRoot or (targetRoot.Position - anchor).Magnitude > LairArenaRadius then
+                    notify("Lair Farm: boss left selected arena; stopped.", 5)
+                    return
                 end
+                if holdPosition(boss, LairDistance, Underneath, job) then
+                    if InstantBossKill then
+                        killTarget(boss)
+                        notify("Local HP=0 attempted. Server kill is not confirmed; farm stopped.", 6)
+                        return
+                    end
+                    attackStep(job)
+                end
+                if not waitActive(jitter(STEALTH.AttackMin, STEALTH.AttackMax), job) then break end
             end
-            if not StartLairFarming then break end
-
-            if ShortPause then task.wait(PauseTimer) end
-
-            -- 2. бой. Позиция — ДО атаки, иначе босс успевает отойти.
-            local boss = findLairBoss()
-            while StartLairFarming and boss do
-                pcall(function()
-                    holdPosition(boss, LairDistance, Underneath)
-                    if InstantBossKill then killTarget(boss) end
-                    attackStep()
-                end)
-
-                task.wait(jitter(STEALTH.AttackMin, STEALTH.AttackMax))
-
-                -- держим ТОГО ЖЕ босса, пока жив. Не ищем нового на каждом тике:
-                -- иначе после его смерти цикл перескакивает на следующего NPC.
-                local h = boss:FindFirstChildOfClass("Humanoid")
-                if not boss.Parent or not h or h.Health <= 0 then break end
-            end
-
-            if ShortPause then task.wait(PauseTimer) end
-            task.wait(jitter(0.4, 0.9))
+            if not active() then break end
+            if ShortPause and not waitActive(PauseTimer, job) then break end
+            if not waitActive(jitter(0.4, 0.9), job) then break end
         end
     end)
-    return true
+    return StartLairFarming
 end
 
-CreateToggle("Begin Lair Farm", "Lair Farm", function()
-    if StartLairFarming then
-        StartLairFarming = false
-    else
-        startLairFarm()
-    end
+CreateToggle("Begin Lair Farm", "Lair Farm", function(on)
+    if not on then stopLairFarm(); return false end
+    return startLairFarm()
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
@@ -1609,7 +2001,8 @@ CreateButton("Select Quest NPC", "Quest Farm", function()
     local best, bestDist = nil, 15
     for _, v in ipairs(nf:GetChildren()) do
         local root = v:FindFirstChild("HumanoidRootPart")
-        if root then
+        local done, questDone = v:FindFirstChild("Done"), v:FindFirstChild("QuestDone")
+        if root and done and done:IsA("RemoteEvent") and questDone and questDone:IsA("RemoteEvent") then
             local d = (p.Position - root.Position).Magnitude
             if d < bestDist then best, bestDist = v, d end
         end
@@ -1641,7 +2034,8 @@ CreateButton("Select NPC", "Quest Farm", function()
     local best, bestDist = nil, 15
     for _, v in ipairs(L:GetChildren()) do
         local root = v:FindFirstChild("HumanoidRootPart")
-        if root and v:FindFirstChild("AI") then
+        local targetHum = v:FindFirstChildOfClass("Humanoid")
+        if root and targetHum and targetHum.Health > 0 and v:FindFirstChild("AI") and not Players:GetPlayerFromCharacter(v) then
             local d = (p.Position - root.Position).Magnitude
             if d < bestDist then best, bestDist = v, d end
         end
@@ -1657,98 +2051,88 @@ CreateButton("Select NPC", "Quest Farm", function()
 end)
 
 local OnlyFarmNPC = false
-CreateToggle("Only Farm NPC", "Quest Farm", function()
-    OnlyFarmNPC = not OnlyFarmNPC
+CreateToggle("Only Farm NPC", "Quest Farm", function(on)
+    OnlyFarmNPC = on == true
+    return OnlyFarmNPC
 end)
 
 local QuestDistance = 4
 CreateNote("Farming Position", "Quest Farm")
 CreateTextBox("Set Distance: ", "Quest Farm", { CustomText = "Default: 4" }, function(Input)
-    local n = tonumber(Input)
-    if n and n > 0 then QuestDistance = n end
+    local n = finiteNumber(Input, 0.5, 100)
+    if n then QuestDistance = n end
 end)
 
 local QUnderneath = false
-CreateToggle("Underneath", "Quest Farm", function()
-    QUnderneath = not QUnderneath
+CreateToggle("Underneath", "Quest Farm", function(on)
+    QUnderneath = on == true
+    return QUnderneath
 end)
 
-local function TriggerQuest()
-    if not SelectedQuestNPC or not SelectedQuestNPC.Parent then
-        notify("Error Grabbing Remote 1", 3)
-        return false
+local function TriggerQuest(job)
+    if not jobActive(job) or not (SelectedQuestNPC and SelectedQuestNPC.Parent == npcFolder()) then return false end
+    local root, p = SelectedQuestNPC:FindFirstChild("HumanoidRootPart"), hrp()
+    local questDone, done = SelectedQuestNPC:FindFirstChild("QuestDone"), SelectedQuestNPC:FindFirstChild("Done")
+    if not (root and p and questDone and done and questDone:IsA("RemoteEvent") and done:IsA("RemoteEvent")) then return false end
+    if (root.Position - p.Position).Magnitude > 25 then
+        if not approach(SelectedQuestNPC, 6, job) or not waitActive(0.1, job) then return false end
     end
-
-    local questDone = SelectedQuestNPC:FindFirstChild("QuestDone")
-    local done = SelectedQuestNPC:FindFirstChild("Done")
-
-    if questDone and questDone:IsA("RemoteEvent") then
-        pcall(function() questDone:FireServer() end)
-    else
-        notify("Error Grabbing Remote 1", 3)
-    end
-
-    if done and done:IsA("RemoteEvent") then
-        pcall(function() done:FireServer() end)
-    else
-        notify("Error Grabbing Remote 2", 3)
-    end
-    return true
+    local currentRoot, currentHum = hrp(), hum()
+    if not jobActive(job) or not (currentRoot and currentHum and currentHum.Health > 0)
+        or SelectedQuestNPC.Parent ~= npcFolder()
+        or SelectedQuestNPC:FindFirstChild("QuestDone") ~= questDone
+        or SelectedQuestNPC:FindFirstChild("Done") ~= done
+        or (root.Position - currentRoot.Position).Magnitude > 25 then return false end
+    local ok1 = pcall(function() questDone:FireServer() end)
+    if not jobActive(job) then return false end
+    local ok2 = pcall(function() done:FireServer() end)
+    return ok1 and ok2
 end
 
 local StartQuestFarming = false
-CreateToggle("Begin Quest Farm", "Quest Farm", function()
-    StartQuestFarming = not StartQuestFarming
-    if not StartQuestFarming then return end
-
-    -- FIX: приоритет операторов в оригинале читался не так, как задумано
-    local ready = (SelectedNPC ~= "None")
-                 and (SelectedQuestNPC ~= nil or OnlyFarmNPC == true)
+CreateToggle("Begin Quest Farm", "Quest Farm", function(on)
+    StartQuestFarming = on == true
+    if not StartQuestFarming then jobStop("quest"); return false end
+    local ready = SelectedNPC ~= "None" and (OnlyFarmNPC or (SelectedQuestNPC and SelectedQuestNPC.Parent == npcFolder()))
     if not ready then
-        notify("You Are Missing A Step! Please Check Tutorial Then Re-Enable!")
         StartQuestFarming = false
-        return
+        notify("You Are Missing A Step! Please Check Tutorial Then Re-Enable!")
+        return false
     end
-
-    task.spawn(function()
-        while StartQuestFarming do
-            local L = living()
-            if not L then task.wait(0.5) else
-                for _, target in ipairs(L:GetChildren()) do
-                    if not StartQuestFarming then break end
-
-                    local th = target:FindFirstChildOfClass("Humanoid")
-                    if target.Name == SelectedNPC and th and th.Health > 0 then
-                        if not OnlyFarmNPC then TriggerQuest() end
-
-                        -- FIX: внутренние циклы больше не затеняют target
-                        while StartQuestFarming and target.Parent and th.Health > 0 do
-                            pcall(function()
-                                holdPosition(target, QuestDistance, QUnderneath)
-                                attackStep()
-                            end)
-                            task.wait(jitter(STEALTH.AttackMin, STEALTH.AttackMax))
-                        end
-
-                        if not OnlyFarmNPC then TriggerQuest() end
-
-                        local p = hrp()
-                        if p then
-                            -- FIX: второй CFrame читал УЖЕ изменённую позицию,
-                            -- поэтому персонаж улетал на +1010 студов и падал.
-                            -- Теперь база запоминается до первого прыжка.
-                            local base = p.Position
-                            pcall(function()
-                                p.CFrame = CFrame.new(base + Vector3.new(0, 0, 1000))
-                                p.CFrame = CFrame.new(base + Vector3.new(0, 10, 0))
-                            end)
-                        end
+    jobStart("quest", true, function()
+        StartQuestFarming = false
+        SetToggle("Begin Quest Farm", "Quest Farm", false)
+    end, function(job)
+        while jobActive(job) do
+            local L, p, myHum = living(), hrp(), hum()
+            if L and p and myHum and myHum.Health > 0 then
+                local target, bestDist
+                for _, candidate in ipairs(L:GetChildren()) do
+                    local th, root = candidate:FindFirstChildOfClass("Humanoid"), candidate:FindFirstChild("HumanoidRootPart")
+                    if candidate.Name == SelectedNPC and candidate:FindFirstChild("AI") and th and root and th.Health > 0 and not Players:GetPlayerFromCharacter(candidate) then
+                        local d = (p.Position - root.Position).Magnitude
+                        if not bestDist or d < bestDist then target, bestDist = candidate, d end
                     end
                 end
-                task.wait(0.3)
+                if target then
+                    if not OnlyFarmNPC and not TriggerQuest(job) then
+                        notify("Quest request could not be sent; stopped.", 5)
+                        break
+                    end
+                    local th = target:FindFirstChildOfClass("Humanoid")
+                    while jobActive(job) and target.Parent == L and th and th.Health > 0 do
+                        if holdPosition(target, QuestDistance, QUnderneath, job) then attackStep(job) end
+                        if not waitActive(jitter(STEALTH.AttackMin, STEALTH.AttackMax), job) then break end
+                    end
+                    if not jobActive(job) then break end
+                    if not OnlyFarmNPC then TriggerQuest(job) end
+                    -- No unrelated +1000/+10 teleports after finishing or disabling.
+                end
             end
+            if not waitActive(0.4, job) then break end
         end
     end)
+    return StartQuestFarming
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
@@ -1758,139 +2142,160 @@ CreateMenu("Item Farm")
 CreateNote("Farm Methods", "Item Farm")
 
 local FarmMethod = 0
+local StartFarming = false
+local ItemSpeeds = {}
+local startItemFarm
 CreateNote("Current Method: None", "Item Farm")
+
+local function restoreItemSpeeds()
+    for humanoid, speed in pairs(ItemSpeeds) do
+        if humanoid.Parent then
+            pcall(function()
+                if humanoid.WalkSpeed == 30 then humanoid.WalkSpeed = speed end
+                local root = humanoid.Parent:FindFirstChild("HumanoidRootPart")
+                if root then humanoid:MoveTo(root.Position) end
+            end)
+        end
+    end
+    ItemSpeeds = {}
+end
+addCleanup(restoreItemSpeeds)
 
 local function setMethod(text)
     setNote("Current Method:", "Current Method: " .. text)
 end
+local function switchItemMethod(method, text)
+    local running = StartFarming
+    jobStop("items")
+    restoreItemSpeeds()
+    FarmMethod = method
+    setMethod(text)
+    if running and startItemFarm then
+        local on = startItemFarm(true)
+        SetToggle("Start Farming", "Item Farm", on)
+    end
+end
+CreateButton("Instant", "Item Farm", function() switchItemMethod(1, "Instant") end)
+CreateButton("Legit", "Item Farm", function() switchItemMethod(2, "Legit") end)
 
-CreateButton("Instant", "Item Farm", function()
-    FarmMethod = 1
-    setMethod("Instant")
-end)
+-- Only unowned world Tools; never chase another player's equipped inventory.
+local function worldItem(tool)
+    if not (tool and tool.Parent and tool:IsA("Tool")) then return false end
+    local parent = tool.Parent
+    while parent and parent ~= Workspace do
+        if parent == char() or parent == backpack() or parent:IsA("Backpack") then return false end
+        if parent:IsA("Model") and parent:FindFirstChildOfClass("Humanoid") then return false end
+        parent = parent.Parent
+    end
+    return parent == Workspace
+end
 
-CreateButton("Legit", "Item Farm", function()
-    FarmMethod = 2
-    setMethod("Legit")
-end)
-
--- FIX: раньше сканировался только Workspace.Vfx и в fireproximityprompt
--- летел nil, если промпта нет. Теперь Vfx + Items + любые Tool с промптом.
 local function itemTargets()
-    local out = {}
-    local me = char()
-
+    local out, seen = {}, {}
+    local p = hrp()
     local function consider(inst)
-        if not inst:IsA("Tool") then return end
-        local parent = inst.Parent
-        while parent and parent ~= Workspace do
-            if parent == me or (backpack() and parent == backpack()) then return end
-            if parent:IsA("Model") and parent:FindFirstChildOfClass("Humanoid") and parent ~= me then return end
-            parent = parent.Parent
-        end
-
-        local part = inst:FindFirstChildOfClass("MeshPart")
-                   or inst:FindFirstChildOfClass("Part")
-                   or inst:FindFirstChildWhichIsA("BasePart")
-        if not part then return end
-
-        local prompt
-        for _, d in ipairs(inst:GetDescendants()) do
-            if d:IsA("ProximityPrompt") then prompt = d break end
-        end
-
+        if seen[inst] or not worldItem(inst) then return end
+        seen[inst] = true
+        local part = inst:FindFirstChild("Handle") or inst:FindFirstChildWhichIsA("BasePart", true)
+        if not (part and part:IsA("BasePart")) then return end
+        local prompt = inst:FindFirstChildWhichIsA("ProximityPrompt", true)
         out[#out + 1] = { obj = inst, part = part, prompt = prompt }
     end
-
-    for _, folderName in ipairs({ "Vfx", "Items" }) do
-        local f = Workspace:FindFirstChild(folderName)
-        if f then
-            for _, v in ipairs(f:GetChildren()) do consider(v) end
-        end
+    for _, child in ipairs(Workspace:GetChildren()) do if child:IsA("Tool") then consider(child) end end
+    for _, name in ipairs({ "Vfx", "Items" }) do
+        local folder = Workspace:FindFirstChild(name)
+        if folder then for _, child in ipairs(folder:GetDescendants()) do consider(child) end end
     end
-
+    if p then table.sort(out, function(a, b) return (a.part.Position - p.Position).Magnitude < (b.part.Position - p.Position).Magnitude end) end
     return out
 end
 
-local function grabTool(t)
-    if not (t and t.part) then return false end
-    local p = hrp()
-    if not p then return false end
-
-    pcall(function() p.CFrame = t.part.CFrame end)
-    task.wait(0.15)
-    if t.prompt then fireProximity(t.prompt) end
-    task.wait(0.15)
-
-    return t.obj.Parent == nil
+local function ownItem(tool)
+    local bp, c = backpack(), char()
+    return tool and ((bp and tool:IsDescendantOf(bp)) or (c and tool:IsDescendantOf(c)))
 end
 
-local function walkAndGrab(t)
-    local h = hum()
-    local p = hrp()
-    if not (h and p and t.part) then return end
+local function grabTool(t, job)
+    local p, c = hrp(), char()
+    if not jobActive(job) or not (p and t and t.part.Parent and worldItem(t.obj)) then return false end
+    if not tpToCF(t.part.CFrame) or not waitActive(0.15, job) or char() ~= c then return false end
+    if ownItem(t.obj) then return true end
+    if not worldItem(t.obj) then return false end
+    if t.prompt then fireProximity(t.prompt, job) end
+    if not waitActive(0.15, job) then return false end
+    return ownItem(t.obj) or t.obj.Parent == nil
+end
 
+local function moveWaypoint(h, position, job, character)
+    local reached
+    local connection = runConnect(h.MoveToFinished, function(ok) reached = ok end)
+    job.connections[connection] = true
+    h:MoveTo(position)
+    local deadline = os.clock() + 3
+    while reached == nil and jobActive(job) and char() == character and h.Parent == character
+        and h.Health > 0 and FarmMethod == 2 and os.clock() < deadline do
+        if not waitActive(0.05, job) then break end
+    end
+    connection:Disconnect()
+    job.connections[connection] = nil
+    local success = jobActive(job) and char() == character and FarmMethod == 2 and reached == true
+    if not success then
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        if root and h.Parent then h:MoveTo(root.Position) end
+    end
+    return success
+end
+
+local function walkAndGrab(t, job)
+    local h, p, c = hum(), hrp(), char()
+    if not jobActive(job) or not (h and h.Health > 0 and p and t and t.part.Parent and worldItem(t.obj)) then return false end
     local path = PathfindingService:CreatePath({ AgentCanJump = true })
-    local ok = pcall(function() path:ComputeAsync(p.Position, t.part.Position) end)
-    if not ok then return end
-
+    path:ComputeAsync(p.Position, t.part.Position)
+    if not jobActive(job) or char() ~= c or not worldItem(t.obj) or path.Status ~= Enum.PathStatus.Success then return false end
     for _, wp in ipairs(path:GetWaypoints()) do
-        h:MoveTo(wp.Position)
-        if wp.Action == Enum.PathWaypointAction.Jump then
-            h:ChangeState(Enum.HumanoidStateType.Jumping)
-        end
-        -- таймаут: без него луп вешался навсегда, если дойти нельзя
-        h.MoveToFinished:Wait(3)
+        if not jobActive(job) or char() ~= c or not worldItem(t.obj) or FarmMethod ~= 2 then return false end
+        if wp.Action == Enum.PathWaypointAction.Jump then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+        if not moveWaypoint(h, wp.Position, job, c) then return false end
     end
-
-    if t.prompt then fireProximity(t.prompt) end
+    if not jobActive(job) or not worldItem(t.obj) then return ownItem(t.obj) end
+    if t.prompt then fireProximity(t.prompt, job) end
+    return ownItem(t.obj) or t.obj.Parent == nil
 end
 
-local StartFarming = false
-CreateToggle("Start Farming", "Item Farm", function()
-    StartFarming = not StartFarming
-
-    if not StartFarming then
-        local h = hum()
-        if h then pcall(function() h.WalkSpeed = 16 end) end
-        return
-    end
-
+startItemFarm = function(on)
+    StartFarming = on == true
+    if not StartFarming then jobStop("items"); restoreItemSpeeds(); return false end
     if FarmMethod ~= 1 and FarmMethod ~= 2 then
-        notify("Select A Farm Method, And Re-Enable!")
         StartFarming = false
-        return
+        notify("Select A Farm Method, And Re-Enable!")
+        return false
     end
-
-    local instant = (FarmMethod == 1)
-
-    task.spawn(function()
-        if not instant then
+    jobStart("items", true, function()
+        StartFarming = false
+        SetToggle("Start Farming", "Item Farm", false)
+        restoreItemSpeeds()
+    end, function(job)
+        while jobActive(job) do
             local h = hum()
-            if h then pcall(function() h.WalkSpeed = 30 end) end
-        end
-
-        while StartFarming do
-            local list = itemTargets()
-
-            if instant then
-                for _, t in ipairs(list) do
-                    if not StartFarming then break end
-                    pcall(grabTool, t)
-                    task.wait(0.1)
+            if h and h.Health > 0 then
+                if FarmMethod == 2 then
+                    if ItemSpeeds[h] == nil then ItemSpeeds[h] = h.WalkSpeed end
+                    h.WalkSpeed = 30
+                else
+                    restoreItemSpeeds()
                 end
-            else
-                for _, t in ipairs(list) do
-                    if not StartFarming then break end
-                    pcall(walkAndGrab, t)
-                    task.wait(0.3)
+                for _, t in ipairs(itemTargets()) do
+                    if not jobActive(job) then break end
+                    if FarmMethod == 1 then grabTool(t, job) else walkAndGrab(t, job) end
+                    if not waitActive(0.15, job) then break end
                 end
             end
-
-            task.wait(instant and 0.2 or 1.0)
+            if not waitActive(FarmMethod == 1 and 0.3 or 1, job) then break end
         end
     end)
-end)
+    return StartFarming
+end
+CreateToggle("Start Farming", "Item Farm", startItemFarm)
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- TELEPORTS
@@ -1958,7 +2363,7 @@ do
                 if subText and subText.Text ~= "" then
                     label = label .. " [" .. subText.Text .. "]"
                 end
-                task.spawn(function()
+                runAsync(function()
                     CreateButton(label, "Teleports", function()
                         tpToCF(CFrame.new(head.Position + Vector3.new(0, 3, 0)))
                     end)
@@ -1976,19 +2381,29 @@ CreateSearchBar("Stand Farm")
 
 CreateNote("Checking Configuration", "Stand Farm")
 
+local function standConfigurationChanged()
+    jobStop("stand")
+end
+
 local StandCheck = false
-CreateToggle("Enable Stand Check", "Stand Farm", function()
-    StandCheck = not StandCheck
+CreateToggle("Enable Stand Check", "Stand Farm", function(on)
+    standConfigurationChanged()
+    StandCheck = on == true
+    return StandCheck
 end)
 
 local AttributeCheck = false
-CreateToggle("Enable Attribute Check", "Stand Farm", function()
-    AttributeCheck = not AttributeCheck
+CreateToggle("Enable Attribute Check", "Stand Farm", function(on)
+    standConfigurationChanged()
+    AttributeCheck = on == true
+    return AttributeCheck
 end)
 
 local SplitChecking = false
-CreateToggle("Split Checking", "Stand Farm", function()
-    SplitChecking = not SplitChecking
+CreateToggle("Split Checking", "Stand Farm", function(on)
+    standConfigurationChanged()
+    SplitChecking = on == true
+    return SplitChecking
 end)
 
 CreateNote("Extra Settings", "Stand Farm")
@@ -1998,28 +2413,33 @@ local UseChargedArrows = false
 local UseKarsMask      = false
 
 CreateButton("Use Stand Arrows", "Stand Farm", function()
+    standConfigurationChanged()
     UseStandArrows, UseChargedArrows, UseKarsMask = true, false, false
     notify("Using Stand Arrows", 3)
 end)
 
 CreateButton("Use Charged Arrows", "Stand Farm", function()
+    standConfigurationChanged()
     UseStandArrows, UseChargedArrows, UseKarsMask = false, true, false
     notify("Using Charged Arrows", 3)
 end)
 
 CreateButton("Use Kars Mask", "Stand Farm", function()
+    standConfigurationChanged()
     UseStandArrows, UseChargedArrows, UseKarsMask = false, false, true
     notify("Using Kars Mask", 3)
 end)
 
 local AutoBuyArrows = false
-CreateToggle("Auto Buy Selected Arrows", "Stand Farm", function()
-    AutoBuyArrows = not AutoBuyArrows
+CreateToggle("Auto Buy Selected Arrows", "Stand Farm", function(on)
+    AutoBuyArrows = on == true
+    return AutoBuyArrows
 end)
 
 local AutoBuyRokakaka = false
-CreateToggle("Auto Buy Rokakaka", "Stand Farm", function()
-    AutoBuyRokakaka = not AutoBuyRokakaka
+CreateToggle("Auto Buy Rokakaka", "Stand Farm", function(on)
+    AutoBuyRokakaka = on == true
+    return AutoBuyRokakaka
 end)
 
 local Webhook = ""
@@ -2028,8 +2448,9 @@ CreateTextBox("Set Webhook", "Stand Farm", {}, function(Input)
 end)
 
 local EnableWebhook = false
-CreateToggle("Enable Webhook", "Stand Farm", function()
-    EnableWebhook = not EnableWebhook
+CreateToggle("Enable Webhook", "Stand Farm", function(on)
+    EnableWebhook = on == true
+    return EnableWebhook
 end)
 
 CreateNote("Stands", "Stand Farm")
@@ -2067,14 +2488,14 @@ do
                and not table.find(Ignore, v.Value) then
                 local stand = v.Value
                 Created[#Created + 1] = stand
-                task.spawn(function()
-                    CreateToggle(stand, "Stand Farm", function()
+                runAsync(function()
+                    CreateToggle(stand, "Stand Farm", function(on)
+                        standConfigurationChanged()
                         local at = table.find(WhitelistedStands, stand)
-                        if at then
-                            table.remove(WhitelistedStands, at)
-                        else
+                        if on and not at then
                             WhitelistedStands[#WhitelistedStands + 1] = stand
-                        end
+                        elseif not on and at then table.remove(WhitelistedStands, at) end
+                        return on == true
                     end)
                 end)
             end
@@ -2092,19 +2513,19 @@ do
         local seen = {}
         for _, v in ipairs(frame:GetChildren()) do
             if v:IsA("TextLabel") then
-                local attr = string.split(v.Text, " ")[1]
+                local attr = tostring(v.Text):gsub("%s*[%(%[]?[%d%.]+%%%s*[%)%]]?%s*$", ""):match("^%s*(.-)%s*$")
                 if attr == "Glass" then attr = "Glass Cannon" end
                 if attr and attr ~= "" and not seen[attr] then
                     seen[attr] = true
                     local name = attr
-                    task.spawn(function()
-                        CreateToggle(name, "Stand Farm", function()
+                    runAsync(function()
+                        CreateToggle(name, "Stand Farm", function(on)
+                            standConfigurationChanged()
                             local at = table.find(WhitelistedAttributes, name)
-                            if at then
-                                table.remove(WhitelistedAttributes, at)
-                            else
+                            if on and not at then
                                 WhitelistedAttributes[#WhitelistedAttributes + 1] = name
-                            end
+                            elseif not on and at then table.remove(WhitelistedAttributes, at) end
+                            return on == true
                         end)
                     end)
                 end
@@ -2113,176 +2534,866 @@ do
     end
 end
 
-local function sendRollWebhook()
-    if not EnableWebhook then return end
+local function sendRollWebhook(currentStand, currentAttri)
+    if not EnableWebhook or not Runtime.alive then return end
     webhookSend(Webhook, {
         content = "@everyone```\nUsername: " .. LP.Name
-               .. "\nStand: " .. standName()
-               .. "\nAttribute: " .. standAttri() .. "```",
+               .. "\nStand: " .. currentStand
+               .. "\nAttribute: " .. currentAttri .. "```",
     })
+end
+
+local function standConfigurationReady()
+    return (StandCheck or AttributeCheck)
+        and (not StandCheck or #WhitelistedStands > 0)
+        and (not AttributeCheck or #WhitelistedAttributes > 0)
+end
+
+local function standMatches()
+    local currentStand, currentAttri = standName(), standAttri()
+    local check1 = StandCheck and table.find(WhitelistedStands, currentStand) ~= nil
+    local check2 = AttributeCheck and table.find(WhitelistedAttributes, currentAttri) ~= nil
+    local hit
+    if SplitChecking then hit = check1 or check2
+    elseif StandCheck and AttributeCheck then hit = check1 and check2
+    else hit = check1 or check2 end
+    return hit, currentStand, currentAttri
+end
+
+local function stopOnStandMatch(job)
+    if not jobActive(job) then return true end
+    if not standConfigurationReady() then
+        jobStop("stand")
+        notify("Stand Farm: checking configuration changed; stopped.", 5)
+        return true
+    end
+    local hit, currentStand, currentAttri = standMatches()
+    if not hit then return false end
+    jobStop("stand")
+    notify("Target roll found: " .. currentStand .. " [" .. currentAttri .. "]", 8)
+    runAsync(function() sendRollWebhook(currentStand, currentAttri) end)
+    return true
 end
 
 -- ── NEXT MOVE ─────────────────────────────────────────────────────────────
 -- FIX: UseArrow / UseChargedArrow — несуществующие глобалы, из-за опечатки
 -- автопокупка не срабатывала никогда. Плюс вечные repeat-until без таймаута.
-local function waitForEquip(toolName, timeout)
-    local c = char()
-    if not c then return nil end
-    return c:WaitForChild(toolName, timeout or 3)
+local function rollReady(job, character)
+    local h = hum()
+    local data = LP:FindFirstChild("Data")
+    return jobActive(job) and char() == character and h and h.Health > 0 and hrp()
+        and data and data:FindFirstChild("Stand") and data:FindFirstChild("Attri")
 end
 
-local function buyArrow()
-    local ev = events()
-    local buy = ev and ev:FindFirstChild("BuyItem")
-    if not buy then return false end
-    local nf = npcFolder()
-    if not nf then return false end
-
-    if UseStandArrows then
-        local npc = nf:FindFirstChild("MerchantAU")
-        if npc and npc:FindFirstChild("HumanoidRootPart") then
-            tpToCF(npc.HumanoidRootPart.CFrame)
-            task.wait(0.5)
-            pcall(function() buy:FireServer("MerchantAU", "Option4") end)
-            task.wait(0.5)
-            return true
-        end
-    elseif UseChargedArrows then
-        local npc = nf:FindFirstChild("Merchant120") or nf:FindFirstChild("Merchantlvl120")
-        if npc and npc:FindFirstChild("HumanoidRootPart") then
-            tpToCF(npc.HumanoidRootPart.CFrame)
-            task.wait(0.5)
-            pcall(function() buy:FireServer("Merchantlvl120", "Option2") end)
-            task.wait(0.5)
-            return true
-        end
+local function awaitInventory(name, job, character)
+    local deadline = os.clock() + 4
+    while rollReady(job, character) and os.clock() < deadline do
+        local bp = backpack()
+        local tool = character:FindFirstChild(name) or (bp and bp:FindFirstChild(name))
+        if tool and tool:IsA("Tool") then return true end
+        if not waitActive(0.1, job) then break end
     end
     return false
 end
 
-local function buyRokakaka()
-    local ev = events()
+local function buyArrow(job)
+    if UseKarsMask then return false, "Kars Mask auto-buy protocol is not available" end
+    local ev, nf = events(), npcFolder()
     local buy = ev and ev:FindFirstChild("BuyItem")
-    local nf = npcFolder()
-    local npc = nf and nf:FindFirstChild("MerchantAU")
-    if not (buy and npc and npc:FindFirstChild("HumanoidRootPart")) then return false end
-    tpToCF(npc.HumanoidRootPart.CFrame)
-    task.wait(0.5)
-    pcall(function() buy:FireServer("MerchantAU", "Option2") end)
-    task.wait(0.5)
+    local charged = UseChargedArrows
+    local merchant = charged and "Merchant120" or "MerchantAU"
+    local npc = nf and (nf:FindFirstChild(merchant) or (charged and nf:FindFirstChild("Merchantlvl120")))
+    local c = char()
+    if not (buy and buy:IsA("RemoteEvent") and npc and npc:FindFirstChild("HumanoidRootPart")) or not rollReady(job, c) then return false, "Arrow merchant unavailable" end
+    if not tpToCF(npc.HumanoidRootPart.CFrame) then return false, "Could not reach arrow merchant" end
+    if not waitActive(0.5, job) or not rollReady(job, c) or stopOnStandMatch(job) then return false, "cancelled" end
+    -- Merchantlvl120 is the protocol role in the saved NpcDialogue client.
+    local sent = pcall(function() buy:FireServer(charged and "Merchantlvl120" or "MerchantAU", charged and "Option2" or "Option4") end)
+    if not sent then return false, "Arrow purchase request failed" end
+    if not awaitInventory(charged and "Charged Arrow" or "Stand Arrow", job, c) then return false, "Arrow purchase produced no item" end
     return true
 end
 
-function NextMove()
-    local arrow = "Stand Arrow"
-    if UseChargedArrows then
-        arrow = "Charged Arrow"
-    elseif UseKarsMask then
-        arrow = "Kars Mask"
-    end
+local function buyRokakaka(job)
+    local ev, nf = events(), npcFolder()
+    local buy = ev and ev:FindFirstChild("BuyItem")
+    local npc = nf and nf:FindFirstChild("MerchantAU")
+    local c = char()
+    if not (buy and buy:IsA("RemoteEvent") and npc and npc:FindFirstChild("HumanoidRootPart")) or not rollReady(job, c) then return false, "Rokakaka merchant unavailable" end
+    if not tpToCF(npc.HumanoidRootPart.CFrame) then return false, "Could not reach Rokakaka merchant" end
+    if not waitActive(0.5, job) or not rollReady(job, c) or stopOnStandMatch(job) then return false, "cancelled" end
+    local sent = pcall(function() buy:FireServer("MerchantAU", "Option2") end)
+    if not sent then return false, "Rokakaka purchase request failed" end
+    if not awaitInventory("Rokakaka", job, c) then return false, "Rokakaka purchase produced no item" end
+    return true
+end
 
-    if not hasStand() then
-        local bp = backpack()
-        if bp and bp:FindFirstChild(arrow) then
-            local c, h = char(), hum()
-            if not (c and h) then return end
-            pcall(function() h:EquipTool(bp:FindFirstChild(arrow)) end)
-            local tool = waitForEquip(arrow, 3)
-            if not tool then return end
-
-            local ev = events()
-            local useItem = ev and ev:FindFirstChild("UseItem")
-
-            for _ = 1, 40 do
-                if hasStand() then break end
-                pcall(function() tool:Activate() end)
-                if useItem then pcall(function() useItem:FireServer() end) end
-                task.wait(0.5)
-            end
-        elseif AutoBuyArrows then
-            buyArrow()
-        end
-        return
-    end
-
-    -- есть стенд → роллим рокакаку
+local function NextMove(job)
+    local c = char()
+    if not rollReady(job, c) then return false, "Character or Data unavailable" end
+    local arrow = UseKarsMask and "Kars Mask" or (UseChargedArrows and "Charged Arrow" or "Stand Arrow")
+    local removing = hasStand()
+    local name = removing and "Rokakaka" or arrow
     local bp = backpack()
-    if bp and bp:FindFirstChild("Rokakaka") then
-        local c, h = char(), hum()
-        if not (c and h) then return end
-        pcall(function() h:EquipTool(bp:FindFirstChild("Rokakaka")) end)
-        local tool = waitForEquip("Rokakaka", 3)
-        if not tool then return end
-
-        local ev = events()
-        local useItem = ev and ev:FindFirstChild("UseItem")
-
-        for _ = 1, 40 do
-            if not hasStand() then break end
-            pcall(function() tool:Activate() end)
-            if useItem then pcall(function() useItem:FireServer() end) end
-            task.wait(0.5)
-        end
-    elseif AutoBuyRokakaka then
-        buyRokakaka()
+    local tool = c:FindFirstChild(name) or (bp and bp:FindFirstChild(name))
+    if not tool then
+        if removing and AutoBuyRokakaka then return buyRokakaka(job) end
+        if not removing and AutoBuyArrows then return buyArrow(job) end
+        return false, "No " .. name .. " in inventory"
     end
+    if not tool:IsA("Tool") then return false, name .. " is not a Tool" end
+    local owner = equipmentAcquire(job)
+    if not owner then return false, "Another operation owns equipment" end
+    local ok, result, reason = pcall(function()
+        local function beforeUse()
+            return rollReady(job, c) and not stopOnStandMatch(job) and hasStand() == removing
+        end
+        if not useToolName(name, job, beforeUse) then return false, "Could not use " .. name end
+        local deadline = os.clock() + 8
+        while rollReady(job, c) and os.clock() < deadline do
+            if stopOnStandMatch(job) then return true end
+            if hasStand() ~= removing then return true end
+            if not waitActive(0.2, job) then return false, "cancelled" end
+        end
+        return false, "No stand change after " .. name
+    end)
+    equipmentRelease(owner)
+    if not ok then return false, tostring(result) end
+    return result, reason
 end
 
 local StandFarm = false
-CreateToggle("Begin Stand Farm", "Stand Farm", function()
-    StandFarm = not StandFarm
-    if not StandFarm then return end
-
-    task.spawn(function()
-        while StandFarm do
-            local currentStand = standName()
-            local currentAttri = standAttri()
-
-            local check1 = table.find(WhitelistedStands, currentStand) ~= nil
-            local check2 = table.find(WhitelistedAttributes, currentAttri) ~= nil
-
-            local hit = false
-
-            if SplitChecking then
-                hit = check1 or check2
-            elseif StandCheck and not AttributeCheck then
-                hit = check1
-            elseif not StandCheck and AttributeCheck then
-                hit = check2
-            elseif StandCheck and AttributeCheck then
-                hit = check1 and check2
+local stopFakeProfile
+CreateToggle("Begin Stand Farm", "Stand Farm", function(on)
+    StandFarm = on == true
+    if not StandFarm then jobStop("stand"); return false end
+    if not standConfigurationReady() then
+        StandFarm = false
+        notify("Enable a check and select its target before farming.", 5)
+        return false
+    end
+    if stopFakeProfile then stopFakeProfile() end
+    jobStart("stand", true, function()
+        StandFarm = false
+        SetToggle("Begin Stand Farm", "Stand Farm", false)
+    end, function(job)
+        local failures = 0
+        while jobActive(job) do
+            if not standConfigurationReady() then
+                notify("Stand Farm: checking configuration changed; stopped.", 5)
+                break
             end
-
-            if hit then
-                sendRollWebhook()
-                -- FIX: раньше тут был break — тоггл оставался включённым,
-                -- а цикл уже мёртвый. Теперь честный стоп.
-                StandFarm = false
-                notify("Target roll found: " .. currentStand .. " [" .. currentAttri .. "]", 8)
-                return
+            local c = char()
+            if not rollReady(job, c) then
+                if not waitActive(0.5, job) then break end
+            else
+                if stopOnStandMatch(job) then return end
+                local ok, reason = NextMove(job)
+                if not jobActive(job) then break end
+                if ok then failures = 0 else failures = failures + 1 end
+                if failures >= 3 then notify("Stand Farm stopped: " .. tostring(reason), 6); break end
+                if not waitActive(0.4, job) then break end
             end
-
-            NextMove()
-            task.wait(0.4)
         end
     end)
+    return StandFarm
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
-pcall(function()
-    CreateNotification("Arctic", "Loaded. Press J to toggle.", { Duration = 6 })
-end)
-print("[Arctic SUR] loaded | stand=" .. standName() .. " | attri=" .. standAttri()
-      .. " | moves=" .. #moveset())
+-- Loaded notification is emitted after every menu and the control API exist.
 
 -- ══════════════════════════════════════════════════════════════════════════
+-- BEGIN SUR FAKE TARGET BLOCK
+-- ══════════════════════════════════════════════════════════════════════════
+-- FAKE PROFILE  (local /check fields + fake stand model)
+-- Player.Data.Stand / .Attri / .GUID and Character.Stats.AttackDmg,
+-- Character.DmgBoostAttri / Humanoid.MaxHealth are read by the saved client.
+-- HUD: PlayerGui.PlayerGUI.ingame.Stats. StandNameConvert maps code to name.
+-- These writes change this client's view, not server ownership or other clients.
+-- ══════════════════════════════════════════════════════════════════════════
+local Fake, AutoKill, fakeStop
+
+do
+local function installFakeTargetBlock()
+Fake = {
+    active = false, stand = nil, attri = nil, guid = nil,
+    health = nil, dmg = nil, boost = nil,
+    saved = {}, clamped = {}, hud = {}, character = nil, removing = nil,
+    model = nil, relCFrame = nil, modelEnabled = false, modelCode = nil, side = 1,
+}
+
+local function dataValue(name)
+    local d = LP:FindFirstChild("Data")
+    local value = d and d:FindFirstChild(name)
+    return value and value:IsA("ValueBase") and value or nil
+end
+
+local function statsFolder()
+    local c = char()
+    return c and c:FindFirstChild("Stats")
+end
+
+local function standCatalog()
+    local out = {}
+    local holder = ReplicatedStorage:FindFirstChild("StandNameConvert")
+    if holder then
+        for _, v in ipairs(holder:GetChildren()) do
+            if v:IsA("StringValue") then out[#out + 1] = { code = v.Name, pretty = tostring(v.Value) } end
+        end
+    end
+    table.sort(out, function(a, b) return a.code < b.code end)
+    return out
+end
+
+local function standPretty(code)
+    local holder = ReplicatedStorage:FindFirstChild("StandNameConvert")
+    local v = holder and holder:FindFirstChild(tostring(code))
+    return v and v:IsA("StringValue") and tostring(v.Value) or tostring(code or "None")
+end
+
+local function attriCatalog()
+    local out, seen = {}, {}
+    local map = Workspace:FindFirstChild("Map")
+    local boards = map and map:FindFirstChild("ChancesBoards")
+    local board = boards and boards:FindFirstChild("AttributeChances")
+    local surface = board and board:FindFirstChild("newSurface")
+    local frame = surface and surface:FindFirstChild("ScrollFrame")
+    if frame then
+        for _, v in ipairs(frame:GetChildren()) do
+            if v:IsA("TextLabel") then
+                local name = tostring(v.Text):gsub("%s*[%(%[]?[%d%.]+%%%s*[%)%]]?%s*$", ""):match("^%s*(.-)%s*$")
+                if name == "Glass" then name = "Glass Cannon" end
+                if name and name ~= "" and not seen[name] then seen[name] = true; out[#out + 1] = name end
+            end
+        end
+    end
+    if #out == 0 then
+        for _, holderName in ipairs({ "AttriList", "Attributes", "AttriNames", "RarityList" }) do
+            local holder = ReplicatedStorage:FindFirstChild(holderName)
+            if holder then
+                for _, v in ipairs(holder:GetChildren()) do
+                    if (v:IsA("StringValue") or v:IsA("Folder")) and not seen[v.Name] then
+                        seen[v.Name] = true; out[#out + 1] = v.Name
+                    end
+                end
+            end
+        end
+    end
+    if #out == 0 then out = { "None", "Weak", "Normal", "Good", "Great", "Excellent", "Perfect", "Legendary", "Mythical", "Godly", "Divine" } end
+    table.sort(out)
+    return out
+end
+
+-- ── exact-instance/property ledger ────────────────────────────────────────
+local function fakeOriginal(instance, property)
+    if not instance then return nil end
+    local fields = Fake.saved[instance]
+    local record = fields and fields[property]
+    if record then return record.original end
+    local ok, value = pcall(function() return instance[property] end)
+    return ok and value or nil
+end
+
+local function fakeWrite(instance, property, value)
+    if not (instance and instance.Parent) or value == nil then return false end
+    local fields = Fake.saved[instance]
+    local record = fields and fields[property]
+    local original = record and record.original
+    if not record then
+        local ok
+        ok, original = pcall(function() return instance[property] end)
+        if not ok then return false end
+    else
+        local ok, observed = pcall(function() return instance[property] end)
+        if not ok then return false end
+        if observed ~= record.last then record.original = observed end
+    end
+    local ok = pcall(function() instance[property] = value end)
+    if not ok then return false end
+    if not fields then fields = {}; Fake.saved[instance] = fields end
+    if not record then record = { original = original }; fields[property] = record end
+    record.last = value
+    return true
+end
+
+local function restoreProperty(instance, property)
+    local fields = Fake.saved[instance]
+    local record = fields and fields[property]
+    if not record then return end
+    if instance.Parent then
+        pcall(function()
+            -- A later independent update is not owned by this fake session.
+            if instance[property] == record.last then instance[property] = record.original end
+        end)
+    end
+    fields[property] = nil
+    if not next(fields) then Fake.saved[instance] = nil end
+end
+
+local function fakeRestore(healthCharacter)
+    local entries = {}
+    for instance, fields in pairs(Fake.saved) do
+        for property in pairs(fields) do entries[#entries + 1] = { instance, property } end
+    end
+    -- Max must be restored before a Health clamp caused by changing Max.
+    for _, entry in ipairs(entries) do if entry[2] == "MaxHealth" then restoreProperty(entry[1], entry[2]) end end
+    for _, entry in ipairs(entries) do if entry[2] ~= "MaxHealth" then restoreProperty(entry[1], entry[2]) end end
+    if not healthCharacter then healthCharacter = char() end
+    for humanoid, clamp in pairs(Fake.clamped) do
+        if humanoid.Parent and humanoid.Parent == healthCharacter and humanoid.Health > 0
+            and humanoid.Health == clamp.after then
+            pcall(function() humanoid.Health = math.min(clamp.before, humanoid.MaxHealth) end)
+        end
+    end
+    Fake.saved, Fake.clamped, Fake.hud, Fake.character = {}, {}, {}, nil
+end
+
+-- ── панель статов слева ───────────────────────────────────────────────────
+local function hudStats()
+    local pg = LP:FindFirstChildOfClass("PlayerGui")
+    local gui = pg and pg:FindFirstChild("PlayerGUI")
+    local ingame = gui and gui:FindFirstChild("ingame")
+    return ingame and ingame:FindFirstChild("Stats")
+end
+
+local function standGuiName()
+    local frame = hudStats()
+    local holder = frame and frame:FindFirstChild("StandName")
+    local label = holder and holder:FindFirstChild("TextLabel", true)
+    return label and label:IsA("TextLabel") and tostring(label.Text) or standName()
+end
+
+local function hudKind(label, frame)
+    local cursor = label
+    while cursor and cursor ~= frame do
+        local name = string.lower(cursor.Name):gsub("[%s_%-]", "")
+        if name == "standname" then return "stand" end
+        if name == "attri" or name == "attribute" then return "attri" end
+        if name == "standhealth" or name == "maxhealth" or name == "health" then return "health" end
+        if name == "standdamage" or name == "attackdmg" or name == "damage" then return "dmg" end
+        if name == "guid" or name == "standguid" then return "guid" end
+        cursor = cursor.Parent
+    end
+    return nil
+end
+
+local function hudApply()
+    local frame = hudStats()
+    if not frame then return end
+    local st = statsFolder()
+    local attack = st and st:FindFirstChild("AttackDmg")
+    local boost = char() and char():FindFirstChild("DmgBoostAttri")
+    local originalDmg = attack and fakeOriginal(attack, "Value")
+    local originalBoost = boost and fakeOriginal(boost, "Value") or 1
+    local realStand = standPretty(fakeOriginal(dataValue("Stand"), "Value") or standCode())
+    local realAttr = fakeOriginal(dataValue("Attri"), "Value")
+    local realHealth = fakeOriginal(hum(), "MaxHealth")
+    local realDamage = originalDmg and math.floor(originalDmg * (originalBoost or 1))
+    local wants = {
+        stand = Fake.stand and standPretty(Fake.stand), attri = Fake.attri, guid = Fake.guid,
+        health = Fake.health and tostring(Fake.health),
+        dmg = (Fake.dmg ~= nil or Fake.boost ~= nil) and tostring(math.floor((Fake.dmg or originalDmg or 0) * (Fake.boost or originalBoost or 1))) or nil,
+    }
+    for _, label in ipairs(frame:GetDescendants()) do
+        if label:IsA("TextLabel") then
+            local kind = Fake.hud[label] or hudKind(label, frame)
+            if not kind then
+                -- Exact textual fallback only; unrelated numeric labels are untouched.
+                local original = fakeOriginal(label, "Text")
+                if original == realStand and Fake.stand then kind = "stand"
+                elseif original == realAttr and Fake.attri then kind = "attri"
+                elseif realHealth and original == tostring(realHealth) and label.Name == "StandHealth" then kind = "health"
+                elseif realDamage and original == tostring(realDamage) and label.Name == "StandDamage" then kind = "dmg" end
+            end
+            if kind then
+                Fake.hud[label] = kind
+                if wants[kind] ~= nil then fakeWrite(label, "Text", tostring(wants[kind])) else restoreProperty(label, "Text") end
+            end
+        end
+    end
+end
+
+-- ── запись / восстановление ───────────────────────────────────────────────
+local function fakeApply()
+    if not Fake.active or not Runtime.alive then return end
+    local c = char()
+    if not c or Fake.removing == c then return end
+    Fake.character = c
+    for _, spec in ipairs({ {"Stand", Fake.stand}, {"Attri", Fake.attri}, {"GUID", Fake.guid} }) do
+        local v = dataValue(spec[1])
+        if spec[2] ~= nil then fakeWrite(v, "Value", spec[2]) elseif v then restoreProperty(v, "Value") end
+    end
+    local st = statsFolder()
+    local attack = st and st:FindFirstChild("AttackDmg")
+    local boost = c:FindFirstChild("DmgBoostAttri")
+    if attack then if Fake.dmg ~= nil then fakeWrite(attack, "Value", Fake.dmg) else restoreProperty(attack, "Value") end end
+    if boost then if Fake.boost ~= nil then fakeWrite(boost, "Value", Fake.boost) else restoreProperty(boost, "Value") end end
+    local h = hum()
+    if h and h.Health > 0 then
+        if Fake.health ~= nil then
+            local before = h.Health
+            local priorClamp = Fake.clamped[h]
+            if priorClamp and before ~= priorClamp.after then Fake.clamped[h] = nil end
+            if fakeWrite(h, "MaxHealth", Fake.health) then
+                local after = h.Health
+                if after < before and after <= Fake.health then
+                    local clamp = Fake.clamped[h]
+                    if not clamp then Fake.clamped[h] = { before = before, after = after } else clamp.after = after end
+                end
+            end
+        else
+            restoreProperty(h, "MaxHealth")
+            local clamp = Fake.clamped[h]
+            if clamp and h.Health == clamp.after and h.Health > 0 then h.Health = math.min(clamp.before, h.MaxHealth) end
+            Fake.clamped[h] = nil
+        end
+    end
+    hudApply()
+end
+
+-- ── модель фейк-стенда ────────────────────────────────────────────────────
+local function fakeStandClear()
+    Fake.modelEnabled = false
+    jobStop("fake-model")
+    local m = Fake.model
+    Fake.model, Fake.relCFrame, Fake.modelCode = nil, nil, nil
+    if m then pcall(function() m:Destroy() end) end
+end
+
+local function findStandSource(code)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local c = plr.Character
+        local model = c and c:FindFirstChild("Stand")
+        local d = plr:FindFirstChild("Data")
+        local value = d and d:FindFirstChild("Stand")
+        local actual = value and (plr == LP and fakeOriginal(value, "Value") or value.Value)
+        if model and model:IsA("Model") and actual ~= nil and tostring(actual) == tostring(code) then return model end
+    end
+    for _, folderName in ipairs({ "Storage", "QuestAssets", "UIStorage", "Vfx" }) do
+        local holder = Workspace:FindFirstChild(folderName)
+        local model = holder and holder:FindFirstChild(tostring(code))
+        if model and model:IsA("Model") then return model end
+    end
+    local model = ReplicatedStorage:FindFirstChild(tostring(code))
+    return model and model:IsA("Model") and model or nil
+end
+
+local function sanitizeStand(model)
+    local partCount = 0
+    for _, inst in ipairs(model:GetDescendants()) do
+        if inst:IsA("LuaSourceContainer") or inst:IsA("BaseScript") or inst:IsA("Script") or inst:IsA("LocalScript") or inst:IsA("ModuleScript") then
+            inst:Destroy()
+        elseif inst:IsA("BasePart") then
+            partCount = partCount + 1
+            inst.Anchored, inst.CanCollide, inst.CanQuery, inst.CanTouch = true, false, false, false
+        elseif inst:IsA("JointInstance") or inst:IsA("WeldConstraint") then
+            local external = false
+            for _, property in ipairs({ "Part0", "Part1" }) do
+                local ok, value = pcall(function() return inst[property] end)
+                if ok and value and not value:IsDescendantOf(model) then external = true end
+            end
+            if external then inst:Destroy() end
+        elseif inst:IsA("Constraint") then
+            local external = false
+            for _, property in ipairs({ "Attachment0", "Attachment1" }) do
+                local ok, value = pcall(function() return inst[property] end)
+                if ok and value and not value:IsDescendantOf(model) then external = true end
+            end
+            if external then inst:Destroy() end
+        elseif inst:IsA("ObjectValue") then
+            local value = inst.Value
+            if value and not value:IsDescendantOf(model) then inst.Value = nil end
+        elseif inst:IsA("Humanoid") then
+            inst.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+        end
+    end
+    return partCount > 0
+end
+
+local function fakeStandWorker()
+    return jobStart("fake-model", false, function()
+        local model = Fake.model
+        Fake.model, Fake.relCFrame, Fake.modelEnabled, Fake.modelCode = nil, nil, false, nil
+        if model then pcall(function() model:Destroy() end) end
+    end, function(job)
+        while jobActive(job) and Fake.modelEnabled do
+            local model, offset = Fake.model, Fake.relCFrame
+            if not (model and model.Parent == Workspace and offset) then break end
+            local root, h = hrp(), hum()
+            if root and h and h.Health > 0 then
+                local ok = pcall(function() model:PivotTo(root.CFrame * offset) end)
+                if not ok then notify("Fake model tracking failed; cleared.", 4); break end
+            end
+            if not waitActive(0.1, job) then break end
+        end
+    end)
+end
+
+local function fakeStandSpawn(code, side)
+    local root, h = hrp(), hum()
+    if not Runtime.alive or not (root and h and h.Health > 0) then return false, "No live character root" end
+    code = code and tostring(code) or standCode()
+    if not code or code == "" or code == "None" then return false, "Select a stand code first" end
+    local source = findStandSource(code)
+    if not source or not source:IsA("Model") then return false, "No exact stand model for " .. code end
+    if not source.Archivable then return false, "Source is not archivable" end
+    local candidate
+    local ok, err = pcall(function()
+        candidate = source:Clone()
+        if not candidate or not candidate:IsA("Model") then error("Clone did not produce a Model") end
+        candidate.Name = "SUR_FakeStand"
+        candidate:SetAttribute("SUR_FakePreview", true)
+        if not sanitizeStand(candidate) then error("Stand clone has no BasePart") end
+        local offset = CFrame.new(3 * (side or 1), 0, 0)
+        candidate:PivotTo(root.CFrame * offset)
+        if not Runtime.alive or root ~= hrp() or h ~= hum() or h.Health <= 0 then error("Character changed while cloning") end
+        candidate.Parent = Workspace
+        if candidate.Parent ~= Workspace then error("Could not parent preview") end
+        local previous = Fake.model
+        Fake.model, Fake.relCFrame, Fake.modelCode, Fake.side = candidate, offset, code, side or 1
+        Fake.modelEnabled = true
+        if previous then previous:Destroy() end
+    end)
+    if not ok then
+        if candidate and candidate ~= Fake.model then pcall(function() candidate:Destroy() end) end
+        return false, tostring(err)
+    end
+    fakeStandWorker()
+    return Fake.model == candidate and Fake.modelEnabled
+end
+
+local function fakeStart()
+    if not Runtime.alive then return false end
+    if Fake.active and Runtime.jobs["fake-profile"] then return true end
+    jobStop("stand")
+    Fake.active = true
+    jobStart("fake-profile", false, function()
+        Fake.active = false
+        fakeRestore()
+        SetToggle("Fake Profile ON", "Fake", false)
+    end, function(job)
+        while jobActive(job) do
+            fakeApply()
+            if not waitActive(0.2, job) then break end
+        end
+    end)
+    return Fake.active
+end
+
+fakeStop = function()
+    if not Fake.active and not Runtime.jobs["fake-profile"] and not next(Fake.saved) then return false end
+    Fake.active = false
+    jobStop("fake-profile")
+    if next(Fake.saved) or next(Fake.clamped) then fakeRestore() end
+    SetToggle("Fake Profile ON", "Fake", false)
+    return false
+end
+addCleanup(function() fakeStop(); fakeStandClear() end)
+
+runConnect(LP.CharacterRemoving, function(character)
+    -- No old character ledger is restored into a replacement character.
+    Fake.removing = character
+    fakeRestore(character)
+end)
+runConnect(LP.CharacterAdded, function(character)
+    if char() == character then Fake.removing = nil end
+end)
+
+-- ── menu pickers use the original library ─────────────────────────────────
+local PickerMenus = {}
+local function makePicker(menuName, entries, onPick)
+    if PickerMenus[menuName] then
+        Delete(menuName) -- menu selector and ScrollingFrame share a name
+        Delete(menuName)
+    end
+    PickerMenus[menuName] = true
+    CreateMenu(menuName)
+    CreateSearchBar(menuName)
+    for _, entry in ipairs(entries) do
+        local picked = entry
+        if type(entry) == "table" and entry.value ~= nil then picked = entry.value end
+        local label = type(entry) == "table" and (entry.label or tostring(picked)) or tostring(entry)
+        CreateButton(label, menuName, function() onPick(picked) end)
+    end
+    local button = Handler and Handler:FindFirstChild(menuName)
+    if button then
+        for _, child in ipairs(Menus:GetChildren()) do if child:IsA("GuiObject") then child.Visible = child.Name == menuName end end
+    end
+end
+
+local function setFakeText(field, text)
+    local value = tostring(text or ""):match("^%s*(.-)%s*$")
+    Fake[field] = value ~= "" and value or nil
+    if Fake.active then fakeApply() end
+    if field == "stand" and Fake.modelEnabled and Fake[field] ~= nil then
+        local ok, err = fakeStandSpawn(Fake[field], Fake.side)
+        if not ok then notify("Preview kept: " .. tostring(err), 4) end
+    end
+end
+
+local function setFakeNumber(field, text, minimum)
+    if tostring(text or ""):match("^%s*$") then
+        Fake[field] = nil
+    else
+        local value = finiteNumber(text, minimum, 1000000000)
+        if not value then notify("Enter a finite " .. field .. " value", 4); return end
+        Fake[field] = value
+    end
+    if Fake.active then fakeApply() end
+end
+
+-- ── меню Fake ─────────────────────────────────────────────────────────────
+CreateMenu("Fake")
+CreateNote("Local Data / Stats / HUD only; no server stand or shared damage.", "Fake")
+CreateToggle("Fake Profile ON", "Fake", function(on)
+    if on then return fakeStart() end
+    return fakeStop()
+end)
+CreateButton("Load from game (real values)", "Fake", function()
+    Fake.stand = fakeOriginal(dataValue("Stand"), "Value")
+    Fake.attri = fakeOriginal(dataValue("Attri"), "Value")
+    Fake.guid = fakeOriginal(dataValue("GUID"), "Value")
+    local st = statsFolder()
+    Fake.dmg = fakeOriginal(st and st:FindFirstChild("AttackDmg"), "Value")
+    Fake.boost = fakeOriginal(char() and char():FindFirstChild("DmgBoostAttri"), "Value")
+    Fake.health = fakeOriginal(hum(), "MaxHealth")
+    if Fake.active then fakeApply() end
+    notify("Loaded real local values", 4)
+end)
+CreateTextBox("Stand Code", "Fake", { CustomText = "SPTW_R" }, function(t) setFakeText("stand", t) end)
+CreateTextBox("Attribute", "Fake", { CustomText = "Godly" }, function(t) setFakeText("attri", t) end)
+CreateTextBox("GUID", "Fake", { CustomText = "00000000-0000-0000-0000-000000000000" }, function(t) setFakeText("guid", t) end)
+CreateTextBox("Stand Damage", "Fake", { CustomText = "9999" }, function(t) setFakeNumber("dmg", t, 0) end)
+CreateTextBox("Damage Boost", "Fake", { CustomText = "9999" }, function(t) setFakeNumber("boost", t, 0) end)
+CreateTextBox("Stand Health", "Fake", { CustomText = "99999" }, function(t) setFakeNumber("health", t, 1) end)
+CreateButton("List all stands", "Fake", function()
+    local catalog, names = standCatalog(), {}
+    for i = 1, math.min(#catalog, 12) do names[#names + 1] = catalog[i].code end
+    notify(#catalog .. " stands: " .. table.concat(names, ", "), 8)
+end)
+CreateButton("Open stand list", "Fake", function()
+    local entries = {}
+    for _, entry in ipairs(standCatalog()) do entries[#entries + 1] = { value = entry.code, label = entry.pretty .. " [" .. entry.code .. "]" } end
+    makePicker("Fake: Stands", entries, function(code) setFakeText("stand", code) end)
+end)
+CreateButton("Open attribute list", "Fake", function()
+    makePicker("Fake: Attributes", attriCatalog(), function(value) Fake.attri = value; if Fake.active then fakeApply() end end)
+end)
+CreateButton("Open stand model list", "Fake", function()
+    local entries = {}
+    for _, entry in ipairs(standCatalog()) do entries[#entries + 1] = entry.code end
+    makePicker("Fake: Models", entries, function(code)
+        local ok, err = fakeStandSpawn(code, 1)
+        if not ok then notify(err, 4) end
+    end)
+end)
+CreateButton("Fake stand model ON", "Fake", function()
+    local ok, err = fakeStandSpawn(Fake.stand, 1)
+    if not ok then notify(err, 4) end
+end)
+CreateButton("Fake stand model OFF", "Fake", function() fakeStandClear() end)
+CreateButton("Read current from HUD", "Fake", function()
+    print("[HUD] stand = " .. standGuiName())
+    notify("HUD: " .. standGuiName(), 4)
+end)
+CreateButton("Print what /check will show", "Fake", function()
+    local st = statsFolder()
+    local attack = st and st:FindFirstChild("AttackDmg")
+    local boost = char() and char():FindFirstChild("DmgBoostAttri")
+    notify("Local check: stand=" .. standName() .. " attri=" .. tostring(dataValue("Attri") and dataValue("Attri").Value)
+        .. " hp=" .. tostring(hum() and hum().MaxHealth) .. " dmg=" .. tostring(attack and math.floor(attack.Value * (boost and boost.Value or 1)))
+        .. " guid=" .. tostring(dataValue("GUID") and dataValue("GUID").Value), 8)
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- AUTO KILL — exact mouse-selected NPC, behind teleport, local Health = 0
+-- ══════════════════════════════════════════════════════════════════════════
+AutoKill = { enabled = false, target = nil, root = nil, humanoid = nil, behind = 6, picking = false, token = 0 }
+
+local function isPlayerDescendant(instance)
+    for _, player in ipairs(Players:GetPlayers()) do
+        local c = player.Character
+        if c and (instance == c or instance:IsDescendantOf(c)) then return true end
+    end
+    return false
+end
+
+local function isNpcModel(model)
+    local L = living()
+    if not (model and model:IsA("Model") and model.Parent == L and L) or isPlayerDescendant(model)
+        or model == Fake.model or model:GetAttribute("SUR_FakePreview") then return false end
+    local h, root = model:FindFirstChildOfClass("Humanoid"), model:FindFirstChild("HumanoidRootPart")
+    return h and h.Health > 0 and root and root:IsA("BasePart") and true or false
+end
+
+local function modelFromInstance(instance)
+    local L = living()
+    local cursor = instance
+    if not L or not cursor or isPlayerDescendant(cursor) then return nil end
+    while cursor and cursor ~= L and cursor ~= Workspace do
+        if cursor.Parent == L then return isNpcModel(cursor) and cursor or nil end
+        cursor = cursor.Parent
+    end
+    return nil
+end
+
+local function selectionNote(text)
+    setNote("Selected target:", "Selected target: " .. (text or "None"))
+end
+
+local function cancelPicker()
+    AutoKill.token = AutoKill.token + 1
+    AutoKill.picking = false
+    jobStop("target-picker")
+end
+
+local function autoKillStop(clear)
+    AutoKill.enabled = false
+    jobStop("auto-kill")
+    SetToggle("Auto Kill Selected", "Auto Kill", false)
+    if clear then
+        cancelPicker()
+        AutoKill.target, AutoKill.root, AutoKill.humanoid = nil, nil, nil
+        selectionNote(nil)
+    end
+end
+
+local function selectedTargetReady(model, root, h)
+    return isNpcModel(model) and AutoKill.target == model and AutoKill.root == root and AutoKill.humanoid == h
+        and model:FindFirstChild("HumanoidRootPart") == root and model:FindFirstChildOfClass("Humanoid") == h
+end
+
+local function killBehind(model, root, targetHum, distance, job)
+    local me, localHum, character = hrp(), hum(), char()
+    if not jobActive(job) or not selectedTargetReady(model, root, targetHum) or not (me and localHum and localHum.Health > 0) then return false end
+    local want = root.CFrame * CFrame.new(0, 0, distance)
+    local moved = pcall(function() me.CFrame = want end)
+    if not moved or not jobActive(job) or char() ~= character or hrp() ~= me or localHum.Health <= 0
+        or not selectedTargetReady(model, root, targetHum) or (me.Position - want.Position).Magnitude > 1 then return false end
+    -- No fallback damage/state changes. Success is local Health only.
+    local ok = pcall(function() targetHum.Health = 0 end)
+    return ok and targetHum.Health == 0
+end
+
+CreateMenu("Auto Kill")
+CreateNote("Select target → click the boss in the world.", "Auto Kill")
+CreateNote("Selected target: None", "Auto Kill")
+CreateNote("HP write is local; server kill and reward are unverified.", "Auto Kill")
+CreateButton("Select target (click boss)", "Auto Kill", function()
+    autoKillStop(true)
+    AutoKill.picking = true
+    local token = AutoKill.token
+    jobStart("target-picker", false, function()
+        if AutoKill.token == token then AutoKill.picking = false end
+    end, function(job)
+        if waitActive(15, job) and AutoKill.token == token then
+            AutoKill.picking = false
+            notify("Target selection expired", 3)
+        end
+    end)
+    notify("Click the NPC itself; Escape/right click cancels", 6)
+end)
+CreateTextBox("Behind distance", "Auto Kill", { CustomText = "6" }, function(t)
+    local value = finiteNumber(t, 0.5, 100)
+    if value then AutoKill.behind = value end
+end)
+CreateToggle("Auto Kill Selected", "Auto Kill", function(on)
+    if not on then autoKillStop(false); return false end
+    cancelPicker()
+    local target, root, h = AutoKill.target, AutoKill.root, AutoKill.humanoid
+    if not selectedTargetReady(target, root, h) or not (hrp() and hum() and hum().Health > 0) then
+        autoKillStop(true)
+        notify("No live exact target; select it first.", 4)
+        return false
+    end
+    AutoKill.enabled = true
+    jobStart("auto-kill", true, function()
+        AutoKill.enabled = false
+        SetToggle("Auto Kill Selected", "Auto Kill", false)
+    end, function(job)
+        if not selectedTargetReady(target, root, h) then return end
+        local success = killBehind(target, root, h, AutoKill.behind, job)
+        notify(success and "Local selected HP=0; server kill unconfirmed." or "Selected action failed; stopped.", 5)
+    end)
+    return AutoKill.enabled
+end)
+CreateButton("Stop Auto Kill", "Auto Kill", function() autoKillStop(true); notify("Auto Kill stopped", 3) end)
+
+-- клик по миру = выбор цели, пока включён режим picking
+runConnect(UIS.InputBegan, function(input, gameProcessed)
+    if not Runtime.alive or not AutoKill.picking then return end
+    if input.KeyCode == Enum.KeyCode.Escape or input.UserInputType == Enum.UserInputType.MouseButton2 then
+        autoKillStop(true); return
+    end
+    if gameProcessed or input.UserInputType ~= Enum.UserInputType.MouseButton1 or UIS:GetFocusedTextBox() then return end
+    local token = AutoKill.token
+    local ok, mouse = pcall(function() return LP:GetMouse() end)
+    local target = ok and mouse and modelFromInstance(mouse.Target) or nil
+    if token ~= AutoKill.token or not Runtime.alive then return end
+    cancelPicker()
+    AutoKill.target = target
+    AutoKill.root = target and target:FindFirstChild("HumanoidRootPart") or nil
+    AutoKill.humanoid = target and target:FindFirstChildOfClass("Humanoid") or nil
+    selectionNote(target and target.Name)
+    notify(target and ("Target: " .. target.Name) or "Nothing selected; click the NPC itself", 4)
+end)
+runConnect(LP.CharacterRemoving, function() autoKillStop(true) end)
+addCleanup(function() autoKillStop(true) end)
+end
+installFakeTargetBlock()
+end -- Private Fake/Auto Kill helpers; only state and stop escape this scope.
+-- END SUR FAKE TARGET BLOCK
+
 -- SUR CONTROL API
 -- Пульт для агента/консоли. UI не трогает, меню не меняет — только дёргает
 -- те же функции, что и кнопки. Нужен, чтобы фарм можно было поднять без
 -- кликов по тогглам.
 -- ══════════════════════════════════════════════════════════════════════════
 local SUR = {}
-getgenv().SUR = SUR
+local publicEnv = getgenv()
+publicEnv.SUR = SUR
+
+function SUR.unload()
+    if not Runtime.alive then return true end
+    Runtime.alive = false
+    local names = {}
+    for name in pairs(Runtime.jobs) do names[#names + 1] = name end
+    for _, name in ipairs(names) do jobStop(name) end
+    AutoUmbrella, AntiAFK, SellKetchup = false, false, false
+    StartLairFarming, StartQuestFarming, StartFarming, StandFarm = false, false, false, false
+    for name in pairs(BossOn) do BossOn[name] = false end
+    for held in pairs(Runtime.heldInputs) do
+        pcall(function() held.remote:FireServer({ State = "End", Key = held.key, Type = held.utype }) end)
+    end
+    Runtime.heldInputs = {}
+    for prompt in pairs(Runtime.heldPrompts) do pcall(function() prompt:InputHoldEnd() end) end
+    Runtime.heldPrompts = {}
+    for _, connection in ipairs(Runtime.connections) do pcall(function() connection:Disconnect() end) end
+    Runtime.connections = {}
+    for thread in pairs(Runtime.tasks) do
+        if thread ~= coroutine.running() and task.cancel then pcall(task.cancel, thread) end
+    end
+    Runtime.tasks = {}
+    for i = #Runtime.cleanup, 1, -1 do
+        local ok, err = pcall(Runtime.cleanup[i])
+        if not ok then warn("[Arctic SUR] cleanup: " .. tostring(err)) end
+    end
+    Runtime.cleanup = {}
+    UIDestroy()
+    -- An old retained unload reference must never erase a newer injection.
+    if publicEnv.SUR == SUR then publicEnv.SUR = nil end
+    if publicEnv.SUR_unload == SUR.unload then publicEnv.SUR_unload = nil end
+    return true
+end
+publicEnv.SUR_unload = SUR.unload
+
+-- Local character transitions cannot carry a farm into an unrelated spawn.
+runConnect(LP.CharacterRemoving, function()
+    local job = Runtime.movement
+    if job then jobStop(job.name) end
+end)
+
+stopFakeProfile = function() fakeStop() end
 
 function SUR.state()
     local p = hrp()
@@ -2296,7 +3407,14 @@ function SUR.state()
         place     = game.PlaceId,
         stand     = standName(),
         attri     = standAttri(),
-        moves     = #moveset(),
+        moves     = #ClearMoves,
+        standCode = standCode(),
+        active    = Runtime.alive,
+        movement  = Runtime.movement and Runtime.movement.name or nil,
+        fakeOn    = Fake.active,
+        autoKill  = AutoKill.enabled,
+        picking   = AutoKill.picking,
+        selectedTarget = AutoKill.target and AutoKill.target.Name or nil,
         position  = p and { X = p.Position.X, Y = p.Position.Y, Z = p.Position.Z } or nil,
         lairNPC   = SelectedLairNPCText,
         lairOn    = StartLairFarming,
@@ -2314,7 +3432,8 @@ function SUR.npcs(radius)
     local p = hrp()
     local nf = npcFolder()
     local out = {}
-    if not (p and nf) then return out end
+    if not Runtime.alive or not (p and nf) then return out end
+    radius = finiteNumber(radius, 1, 10000) or 400
     for _, v in ipairs(nf:GetChildren()) do
         local root = v:FindFirstChild("HumanoidRootPart")
         if root then
@@ -2340,7 +3459,9 @@ function SUR.selectLair(fragment, radius)
     local nf = npcFolder()
     if not nf then return false, "no Map.NPCs" end
 
-    radius = tonumber(radius) or 250
+    if not Runtime.alive then return false, "unloaded" end
+    radius = finiteNumber(radius, 1, 500) or 15
+    if fragment ~= nil then fragment = tostring(fragment) end
     local p = hrp()
     if not p then return false, "no character" end
 
@@ -2349,7 +3470,8 @@ function SUR.selectLair(fragment, radius)
     for _, v in ipairs(nf:GetChildren()) do
         local root = v:FindFirstChild("HumanoidRootPart")
         local okName = (not fragment) or string.find(string.lower(v.Name), string.lower(fragment), 1, true)
-        if root and okName and v:FindFirstChild("Done") then
+        local done = v:FindFirstChild("Done")
+        if root and okName and done and done:IsA("RemoteEvent") then
             local d = (p.Position - root.Position).Magnitude
             if d <= radius and d < pickDist then pick, pickDist = v, d end
         end
@@ -2361,6 +3483,7 @@ function SUR.selectLair(fragment, radius)
     local main = head and head:FindFirstChild("Main")
     local txt  = main and main:FindFirstChild("Text")
 
+    stopLairFarm()
     SelectedLairNPC = pick
     SelectedLairNPCText = (txt and txt.Text) or pick.Name
     setNote("Selected Lair NPC:", "Selected Lair NPC: " .. SelectedLairNPCText)
@@ -2368,21 +3491,27 @@ function SUR.selectLair(fragment, radius)
 end
 
 function SUR.underneath(on)
-    Underneath = (on ~= false)
+    if not Runtime.alive then return false end
+    Underneath = on ~= false
+    SetToggle("Underneath", "Lair Farm", Underneath)
     return Underneath
 end
 
 function SUR.instantKill(on)
-    InstantBossKill = (on == true)
+    if not Runtime.alive then return false end
+    InstantBossKill = on == true
+    SetToggle("Instant Boss Kill (HP = 0)", "Lair Farm", InstantBossKill)
     return InstantBossKill
 end
 
 function SUR.lairStart()
-    return startLairFarm()
+    local on = startLairFarm()
+    SetToggle("Begin Lair Farm", "Lair Farm", on)
+    return on
 end
 
 function SUR.lairStop()
-    StartLairFarming = false
+    stopLairFarm()
     return true
 end
 
@@ -2416,3 +3545,21 @@ function SUR.scan()
 
     return out
 end
+
+
+function SUR.diagnostics()
+    local out = { active = Runtime.alive, jobs = {}, errors = {}, connections = 0, tasks = 0 }
+    for name in pairs(Runtime.jobs) do out.jobs[#out.jobs + 1] = name end
+    table.sort(out.jobs)
+    for _, connection in ipairs(Runtime.connections) do if connection.Connected then out.connections = out.connections + 1 end end
+    for thread in pairs(Runtime.tasks) do
+        if coroutine.status(thread) ~= "dead" then out.tasks = out.tasks + 1 else Runtime.tasks[thread] = nil end
+    end
+    for i, err in ipairs(Runtime.errors) do out.errors[i] = err end
+    return out
+end
+
+pcall(function()
+    CreateNotification("Arctic", "Loaded. Press L to toggle.", { Duration = 6 })
+end)
+print("[Arctic SUR] loaded | stand=" .. standName() .. " | attri=" .. standAttri())

@@ -20,7 +20,7 @@ def main():
         print("usage: boss_target.py <script.lua>")
         return 1
 
-    lua = lupa.LuaRuntime()
+    lua = lupa.LuaRuntime(unpack_returned_tuples=True)
     with open(os.path.join(HERE, "mock_roblox.lua"), encoding="utf-8") as f:
         mock = lua.execute(f.read())
 
@@ -36,6 +36,8 @@ def main():
     err_list = list(errors.values()) if hasattr(errors, "values") else list(errors)
     for e in err_list:
         print(f"spawned error: {e}")
+    if err_list:
+        return 1
 
     # Build NPCs inside Workspace.Living through the mock's own constructor.
     setup = lua.eval("""
@@ -132,12 +134,25 @@ def main():
     else:
         print("  OK    bossAlive = nil  (world boss ignored)")
 
+    warnings = list(mock.warnings.values()) if mock.warnings is not None else []
+    if warnings:
+        failures.extend(f"runtime warning: {warning}" for warning in warnings)
+    final_errors = list(mock.errors.values()) if mock.errors is not None else []
+    failures.extend(f"runtime error: {error}" for error in final_errors)
+    if mock.env.SUR is not None:
+        mock.env.SUR.unload()
+    if mock.advance is not None:
+        advanced, _ = mock.advance(1, 10000)
+        if not advanced:
+            failures.append("scheduler failed during cleanup")
+        if mock.activeTasks() != 0 or mock.activeConnections() != 0:
+            failures.append("runtime resources survived cleanup")
     print()
     if failures:
         for f in failures:
             print(f"FAIL {f}")
         return 1
-    print("ALL BOSS-TARGETING CHECKS PASSED")
+    print("ALL LOCAL BOSS-TARGETING CHECKS PASSED; server behavior not tested")
     return 0
 
 

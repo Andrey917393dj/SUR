@@ -1,0 +1,3 @@
+# Offline build and regression VM. The project targets Roblox Luau; Lupa checks
+# the compatible Lua syntax subset and runs the deterministic local mock only.
+lupa>=2.6,<3

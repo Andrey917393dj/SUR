@@ -8,3 +8,15 @@ sur_beat.json
 sur_out_*.json
 sur_bc_*.b64
 sur_src_*.lua
+
+# Private local game/runtime material is never published.
+/recon/
+/dumps/
+/agentrouter-farm/
+/agent/
+/legacy/before_recheck_*/
+/legacy/xeno_tabs_*/
+/legacy/archived_*/
+*.log
+settings.json
+XENO_CACHE.bin

@@ -1,0 +1,207 @@
+[
+  {
+    "original": "SUR_Arctic_v2.lua",
+    "archived": "legacy/published_20261106/SUR_Arctic_v2.lua",
+    "sha256": "aaacb9f725f45e7e5cb8a48b8b5bb7dbf29346657708524021066233d348e737"
+  },
+  {
+    "original": "lib/ArcticLib.lua",
+    "archived": "legacy/published_20261106/lib/ArcticLib.lua",
+    "sha256": "595abc55e391cc96a2ae5513da2296f1306d7ad8b51d184b59730ae268b1e1cc"
+  },
+  {
+    "original": "src/autodiag.lua",
+    "archived": "legacy/published_20261106/src/autodiag.lua",
+    "sha256": "9da775e08d812417a69075cbc9cfadf4c965370b3709a6d29cf56a560a2d2de2"
+  },
+  {
+    "original": "src/build.py",
+    "archived": "legacy/published_20261106/src/build.py",
+    "sha256": "ca9e2594948b93c2a08209a709d742e9fcb28bc034814df316fa628a2f51459f"
+  },
+  {
+    "original": "src/fix_lib.py",
+    "archived": "legacy/published_20261106/src/fix_lib.py",
+    "sha256": "2c20f11b3150777be962983e2566cd7d2710b61278161cc150309e153e0e0e60"
+  },
+  {
+    "original": "src/lib.lua",
+    "archived": "legacy/published_20261106/src/lib.lua",
+    "sha256": "d7e65207d153f172e71ac96c86495847f4dbb17685f976bffc57ee3ee091b4f8"
+  },
+  {
+    "original": "src/main.lua",
+    "archived": "legacy/published_20261106/src/main.lua",
+    "sha256": "72b2143631dd6750b0a06a46527361d5da0190b175059b38af265e13a44f8d43"
+  },
+  {
+    "original": "tools/cdp.py",
+    "archived": "legacy/published_20261106/tools/cdp.py",
+    "sha256": "ccdc134838691b4f6d2afb7cfa5c64af55f0bec09c1c81b8f99fadc27b697876"
+  },
+  {
+    "original": "tools/sur_agent.lua",
+    "archived": "legacy/published_20261106/tools/sur_agent.lua",
+    "sha256": "4595ee4ef66c49f0d41d5b6cf4048f38df06e7abbd24c3e98a6ae168606c9ac9"
+  },
+  {
+    "original": "tools/sur_agent.py",
+    "archived": "legacy/published_20261106/tools/sur_agent.py",
+    "sha256": "ac7a85e539e4e093dcf5a789df601d20f1f721ff6254382a224eda61d0b04423"
+  },
+  {
+    "original": "tools/snippets/audit1.lua",
+    "archived": "legacy/published_20261106/tools/snippets/audit1.lua",
+    "sha256": "1ec5373e2144d48c6b00532821a090fa1f960456349612461b3da6903e2bcaf3"
+  },
+  {
+    "original": "tools/snippets/audit2.lua",
+    "archived": "legacy/published_20261106/tools/snippets/audit2.lua",
+    "sha256": "716f81ed5246c5377839d5da829b5d3b3af41c165a1aa40048b58de61c2724c7"
+  },
+  {
+    "original": "tools/snippets/audit_a.lua",
+    "archived": "legacy/published_20261106/tools/snippets/audit_a.lua",
+    "sha256": "6729f890451eda547864ff42e83b3a46acaae8306c6623601124823f2b9f2eb6"
+  },
+  {
+    "original": "tools/snippets/audit_b.lua",
+    "archived": "legacy/published_20261106/tools/snippets/audit_b.lua",
+    "sha256": "83095a7903198b2ed47ef69f1b0b458a1f6f7e9d2dae2876e38c603833ab4c57"
+  },
+  {
+    "original": "tools/snippets/audit_c.lua",
+    "archived": "legacy/published_20261106/tools/snippets/audit_c.lua",
+    "sha256": "be10f2548f32dba51624cf5fdb029d66404f72fffbeaef6596d733295e4bfdb3"
+  },
+  {
+    "original": "tools/snippets/audit_c2.lua",
+    "archived": "legacy/published_20261106/tools/snippets/audit_c2.lua",
+    "sha256": "2169c58b71e184ae0a537664e79a52a094dcbac0aef7fb0fd31bdc09f40bf802"
+  },
+  {
+    "original": "tools/snippets/audit_d.lua",
+    "archived": "legacy/published_20261106/tools/snippets/audit_d.lua",
+    "sha256": "f82db16879e10cbf169f52f19af9bb3aebbc899ced157bf24479be33da765267"
+  },
+  {
+    "original": "tools/snippets/audit_e.lua",
+    "archived": "legacy/published_20261106/tools/snippets/audit_e.lua",
+    "sha256": "5636f97ce55bfd07d4c9d8d08083a9e047195debcbb377ce3d4dcea3e2d8fbc6"
+  },
+  {
+    "original": "tools/snippets/audit_long.lua",
+    "archived": "legacy/published_20261106/tools/snippets/audit_long.lua",
+    "sha256": "a000acde7a57a678c32b23cf92a9d03e02c05f762fc62fbdb8d928835fa5f561"
+  },
+  {
+    "original": "tools/snippets/audit_move_e.lua",
+    "archived": "legacy/published_20261106/tools/snippets/audit_move_e.lua",
+    "sha256": "1919091ff6bbd1ad97353094f49e1d677500c2179b804b4a713e6e6d96af590a"
+  },
+  {
+    "original": "tools/snippets/audit_move_r.lua",
+    "archived": "legacy/published_20261106/tools/snippets/audit_move_r.lua",
+    "sha256": "9b32078562a4d7597e068146c0b13ce030973e4853069ba643f183c4c2f960f2"
+  },
+  {
+    "original": "tools/snippets/audit_move_t.lua",
+    "archived": "legacy/published_20261106/tools/snippets/audit_move_t.lua",
+    "sha256": "2713191044df38a7fffec65fb1619adb9c36d7a9e4d36e88196bc84c54b40ef2"
+  },
+  {
+    "original": "tools/snippets/audit_move_x.lua",
+    "archived": "legacy/published_20261106/tools/snippets/audit_move_x.lua",
+    "sha256": "6e228594054bae3f5b38072c3977b1c414fedb3a1ba52d5e0b3b233eee4cc0ea"
+  },
+  {
+    "original": "tools/snippets/decompile_batch1.lua",
+    "archived": "legacy/published_20261106/tools/snippets/decompile_batch1.lua",
+    "sha256": "7f47d3bb669c7ab3f1b211733c207bd861cb676925024bc129dfa78e67c11044"
+  },
+  {
+    "original": "tools/snippets/diag_moves.lua",
+    "archived": "legacy/published_20261106/tools/snippets/diag_moves.lua",
+    "sha256": "b9d5f94ef0401b34af63c91a3a85a835b855e41d52805c7ec33425376eb97f3d"
+  },
+  {
+    "original": "tools/snippets/items.lua",
+    "archived": "legacy/published_20261106/tools/snippets/items.lua",
+    "sha256": "2e8de0c99d0fc0ed0baa99abccc1ab4912b252b4967798bb2eb3a3a5742f79f1"
+  },
+  {
+    "original": "tools/snippets/map_moves.lua",
+    "archived": "legacy/published_20261106/tools/snippets/map_moves.lua",
+    "sha256": "1ec04187a4bff80738dfd019b63dcd54e6c6b52e0866137cde97897e7a453878"
+  },
+  {
+    "original": "tools/snippets/map_remotes.lua",
+    "archived": "legacy/published_20261106/tools/snippets/map_remotes.lua",
+    "sha256": "ad4df0163d8910f6afc30b047aa95f2831ac893f23143f20c0de0bb22e3b7142"
+  },
+  {
+    "original": "tools/snippets/moveset.lua",
+    "archived": "legacy/published_20261106/tools/snippets/moveset.lua",
+    "sha256": "9017d747b4131a32d4f0376058ceb17080daaa86d1ae90fe3475c3e9cd89a7d1"
+  },
+  {
+    "original": "tools/snippets/npc_map.lua",
+    "archived": "legacy/published_20261106/tools/snippets/npc_map.lua",
+    "sha256": "8be194df731cfbe679fa4ab069dd684a6d4531c1f552350f908b98ca98fa50db"
+  },
+  {
+    "original": "tools/snippets/recon1.lua",
+    "archived": "legacy/published_20261106/tools/snippets/recon1.lua",
+    "sha256": "01b9b120e5784dd798bd5ebde5c007593304fee62f24d07b21b0028052b74708"
+  },
+  {
+    "original": "tools/snippets/recon2.lua",
+    "archived": "legacy/published_20261106/tools/snippets/recon2.lua",
+    "sha256": "07b949289429e859c63894c43f8416bc08f957d27f4364bb6e99e74f982d6d98"
+  },
+  {
+    "original": "tools/snippets/test_listen.lua",
+    "archived": "legacy/published_20261106/tools/snippets/test_listen.lua",
+    "sha256": "0da9d174f8bb4f3964939dd5948bcfc5068a4f9f2418455a00f2042d4fb332db"
+  },
+  {
+    "original": "tools/snippets/test_move.lua",
+    "archived": "legacy/published_20261106/tools/snippets/test_move.lua",
+    "sha256": "aa04669fd0ed2b5df99cc7a40fd29fa5380e284cf8be55eb3150e905aaf89eae"
+  },
+  {
+    "original": "tools/snippets/test_prompt.lua",
+    "archived": "legacy/published_20261106/tools/snippets/test_prompt.lua",
+    "sha256": "808a071b7104e06a895a317efdc4ed2496b2f83bbf4f7310f472b49bce1defba"
+  },
+  {
+    "original": "tools/snippets/test_touch.lua",
+    "archived": "legacy/published_20261106/tools/snippets/test_touch.lua",
+    "sha256": "426493b88ba19eb87d0e3b8c7f375d6ab353a1d9b91cb271d0b2632b0a22b52e"
+  },
+  {
+    "original": "tools/snippets/vuln1.lua",
+    "archived": "legacy/published_20261106/tools/snippets/vuln1.lua",
+    "sha256": "c7116a3ee26b419e946e5f32269fd1b622143723b7db3d0e418edce447219e70"
+  },
+  {
+    "original": "tools/snippets/world_map.lua",
+    "archived": "legacy/published_20261106/tools/snippets/world_map.lua",
+    "sha256": "d1a1ccb86c30c644015dcd7ac7912e6f656e634a8c5f72746ab851ea0771ad7a"
+  },
+  {
+    "original": "docs/AUDIT.md",
+    "archived": "legacy/published_20261106/docs/previous_AUDIT.md",
+    "sha256": "ca6f1e6d4317aba8a884900d41c468922e86d6d8f82b85079c93fd05bbec4f49"
+  },
+  {
+    "original": "docs/FINDINGS.md",
+    "archived": "legacy/published_20261106/docs/previous_FINDINGS.md",
+    "sha256": "6bfeb6ac681624df8dd38f7b427e8d4ced7497cf0d5cda22f7e10116342161be"
+  },
+  {
+    "original": "docs/MESSAGE_FIXES.md",
+    "archived": "legacy/published_20261106/docs/previous_MESSAGE_FIXES.md",
+    "sha256": "8fad1da6113bd4f18944f5fc2a6d3f26db053ab7a117c73babff36c693d5c47f"
+  }
+]

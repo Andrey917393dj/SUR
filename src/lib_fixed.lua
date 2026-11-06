@@ -7,12 +7,124 @@
 -- ============================================================
 
 -- ══ module scope: Start() fills these, API functions read them ══
-local ScreenGui, Frame, Hotbar, CloseButton, TitleLabel, Buttons, Handler, Menus
+local ScreenGui, Frame, Hotbar, CloseButton, MinimizeButton, TitleLabel, Buttons, Handler, Menus
 local DefaultColor = Color3.fromRGB(124, 106, 255)
 local TweenServ = game:GetService("TweenService")
 local UIS       = game:GetService("UserInputService")
+local UIConnections = {}
+local ToggleStates = {}
+local UIBusy = {}
+local UIThreads = {}
+local UIClosed = false
+local UIGeneration = 0
+local UIConnectionOwners = {}
+local UIConnectionsByOwner = {}
+local UIDestroy
 
-function Start(A, B)
+local function UIReport(label, err)
+    warn("[Arctic SUR] " .. tostring(label) .. ": " .. tostring(err))
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "Arctic", Text = tostring(label) .. ": " .. tostring(err), Duration = 5,
+        })
+    end)
+end
+
+local function UIDisconnect(connection)
+    if not connection then return end
+    pcall(function() connection:Disconnect() end)
+    UIConnections[connection] = nil
+    local owner = UIConnectionOwners[connection]
+    UIConnectionOwners[connection] = nil
+    local owned = owner and UIConnectionsByOwner[owner]
+    if owned then owned[connection] = nil end
+end
+
+local function UIForget(owner)
+    local owned = UIConnectionsByOwner[owner]
+    if owned then
+        local connections = {}
+        for connection in pairs(owned) do connections[#connections + 1] = connection end
+        for _, connection in ipairs(connections) do UIDisconnect(connection) end
+        UIConnectionsByOwner[owner] = nil
+    end
+    for _, states in pairs(ToggleStates) do
+        for name, state in pairs(states) do if state.owner == owner then states[name] = nil end end
+    end
+end
+
+local function UIConnect(event, callback, owner)
+    local generation = UIGeneration
+    local connection = event:Connect(function(...)
+        if UIClosed or generation ~= UIGeneration then return end
+        local ok, err = pcall(callback, ...)
+        if not ok and not UIClosed and generation == UIGeneration then UIReport("UI", err) end
+    end)
+    UIConnections[connection] = true
+    if owner then
+        UIConnectionOwners[connection] = owner
+        if not UIConnectionsByOwner[owner] then
+            UIConnectionsByOwner[owner] = {}
+            local destroying = owner.Destroying:Connect(function() UIForget(owner) end)
+            UIConnections[destroying] = true
+            UIConnectionOwners[destroying] = owner
+            UIConnectionsByOwner[owner][destroying] = true
+        end
+        UIConnectionsByOwner[owner][connection] = true
+    end
+    return connection
+end
+
+local function UICall(callback, ...)
+    if UIClosed or type(callback) ~= "function" or UIBusy[callback] then return false end
+    local generation = UIGeneration
+    local thread = coroutine.running()
+    UIThreads[thread] = true
+    UIBusy[callback] = true
+    local ok, result = pcall(callback, ...)
+    UIBusy[callback] = nil
+    UIThreads[thread] = nil
+    if generation ~= UIGeneration or UIClosed then return false end
+    if not ok then UIReport("Action", result) end
+    return ok, result
+end
+
+local function SetToggle(Name, MenuName, value)
+    local states = ToggleStates[MenuName]
+    local state = states and states[Name]
+    if state then
+        state.value = value == true
+        if state.paint then state.paint(state.value) end
+    end
+    return value == true
+end
+
+UIDestroy = function()
+    if UIClosed then return end
+    UIClosed = true
+    UIGeneration = UIGeneration + 1
+    for connection in pairs(UIConnections) do pcall(function() connection:Disconnect() end) end
+    UIConnections, UIConnectionOwners, UIConnectionsByOwner = {}, {}, {}
+    ToggleStates, UIBusy = {}, {}
+    for thread in pairs(UIThreads) do
+        if thread ~= coroutine.running() and task.cancel then pcall(task.cancel, thread) end
+    end
+    UIThreads = {}
+    local gui = ScreenGui
+    ScreenGui = nil
+    Frame, Hotbar, CloseButton, MinimizeButton, TitleLabel, Buttons, Handler, Menus = nil, nil, nil, nil, nil, nil, nil, nil
+    pcall(function() if gui then gui:Destroy() end end)
+    local g = getgenv and getgenv()
+    if g and g.ArcticScreenGui == gui then g.ArcticScreenGui = nil end
+end
+
+local function Start(A, B)
+    -- Reinjection must stop the old runtime, not merely delete its window.
+    local g = getgenv and getgenv()
+    if g and type(g.SUR_unload) == "function" then pcall(g.SUR_unload) end
+    if ScreenGui then UIDestroy() end
+    UIGeneration = UIGeneration + 1
+    UIClosed = false
     local IgnoreDuplicates = false
 
     -- FIX: was pcall(function() if B["ColorTheme"]... end) which silently
@@ -27,11 +139,11 @@ function Start(A, B)
     end
 
     if not IgnoreDuplicates then
-        for _, v in pairs(game:GetService("CoreGui"):GetChildren()) do
-            if v.Name == A then
-                v:Destroy()
+        pcall(function()
+            for _, v in ipairs(game:GetService("CoreGui"):GetChildren()) do
+                if v.Name == A and v:IsA("ScreenGui") then v:Destroy() end
             end
-        end
+        end)
     end
 
     -- ── UI Construction ──────────────────────────────────────
@@ -39,6 +151,7 @@ function Start(A, B)
     Frame        = Instance.new("Frame")
     Hotbar       = Instance.new("Frame")
     CloseButton  = Instance.new("ImageButton")
+    MinimizeButton = Instance.new("ImageButton")
     TitleLabel   = Instance.new("TextLabel")
     local UICorner     = Instance.new("UICorner")
     Buttons      = Instance.new("Frame")
@@ -49,18 +162,30 @@ function Start(A, B)
     local UIListLayout = Instance.new("UIListLayout")
 
     ScreenGui.Name = A
-    local function getSafeGuiParent()
-        if gethui then
-            local ok, res = pcall(gethui)
-            if ok and res then return res end
-        end
-        local cg = game:GetService("CoreGui")
-        local ok = pcall(function() return cg.Name end)
-        if ok then return cg end
-        return game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+    ScreenGui.ResetOnSpawn = false
+    local function tryParent(parent)
+        if not parent then return false end
+        return pcall(function() ScreenGui.Parent = parent end)
     end
-    local guiParent = getSafeGuiParent()
-    ScreenGui.Parent = guiParent
+    local parented = false
+    if gethui then
+        local ok, parent = pcall(gethui)
+        if ok then parented = tryParent(parent) end
+    end
+    if not parented then
+        local ok, parent = pcall(function() return game:GetService("CoreGui") end)
+        if ok then parented = tryParent(parent) end
+    end
+    if not parented then
+        local playerGui = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui", 5)
+        parented = tryParent(playerGui)
+    end
+    if not parented then error("No writable GUI parent") end
+    if not IgnoreDuplicates then
+        for _, other in ipairs(ScreenGui.Parent:GetChildren()) do
+            if other ~= ScreenGui and other.Name == A and other:IsA("ScreenGui") then other:Destroy() end
+        end
+    end
     pcall(function() getgenv().ArcticScreenGui = ScreenGui end)
     ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
@@ -76,6 +201,7 @@ function Start(A, B)
     Hotbar.BorderSizePixel = 0
     Hotbar.Size = UDim2.new(0, 501, 0, 27)
 
+    CloseButton.Name = "CloseButton"
     CloseButton.Parent = Hotbar
     CloseButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
     CloseButton.BackgroundTransparency = 1.000
@@ -83,6 +209,17 @@ function Start(A, B)
     CloseButton.Position = UDim2.new(0.944111764, 0, 0.111111104, 0)
     CloseButton.Size = UDim2.new(0, 20, 0, 20)
     CloseButton.Image = "rbxassetid://3944676352"
+
+    -- minimize: hides the window only. Close kills the whole script.
+    MinimizeButton.Name = "MinimizeButton"
+    MinimizeButton.Parent = Hotbar
+    MinimizeButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    MinimizeButton.BackgroundTransparency = 1.000
+    MinimizeButton.BorderSizePixel = 0
+    MinimizeButton.Position = UDim2.new(0.893218, 0, 0.111111104, 0)
+    MinimizeButton.Size = UDim2.new(0, 20, 0, 20)
+    MinimizeButton.Image = "rbxassetid://3944680095"
+
 
     TitleLabel.Parent = Hotbar
     TitleLabel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
@@ -151,41 +288,55 @@ function Start(A, B)
     end
 
     -- FIX: drag on Hotbar only (was on whole Frame which ate clicks on content)
-    Hotbar.InputBegan:Connect(function(input)
+    UIConnect(Hotbar.InputBegan, function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
             dragging  = true
             dragStart = input.Position
             startPos  = Frame.Position
-            input.Changed:Connect(function()
+            local ended
+            ended = UIConnect(input.Changed, function()
                 if input.UserInputState == Enum.UserInputState.End then
                     dragging = false
+                    UIDisconnect(ended)
                 end
             end)
         end
     end)
 
-    Hotbar.InputChanged:Connect(function(input)
+    UIConnect(Hotbar.InputChanged, function(input)
         if input.UserInputType == Enum.UserInputType.MouseMovement
         or input.UserInputType == Enum.UserInputType.Touch then
             dragInput = input
         end
     end)
 
-    UIS.InputChanged:Connect(function(input)
+    UIConnect(UIS.InputChanged, function(input)
         if input == dragInput and dragging then
             updateDrag(input)
         end
     end)
 
-    CloseButton.MouseButton1Down:Connect(function()
-        Frame.Visible = false
+    -- CLOSE = full unload: stop every farm loop, then destroy the GUI.
+    -- Hiding it (the old behaviour) left the farms running in the dark.
+    UIConnect(CloseButton.MouseButton1Down, function()
+        pcall(function()
+            local g = getgenv and getgenv()
+            if g and g.SUR_unload then g.SUR_unload() end
+        end)
+        UIDestroy()
     end)
 
-    -- Toggle UI: default J; override with getgenv().ArcticUiHotkey = "Semicolon" etc. (Enum.KeyCode name)
-    UIS.InputBegan:Connect(function(input, gameProcessed)
-        if gameProcessed then return end
-        local key = Enum.KeyCode.J
+    -- MINIMIZE = hide only
+    UIConnect(MinimizeButton.MouseButton1Down, function()
+        if Frame and ScreenGui and ScreenGui.Parent then Frame.Visible = false end
+    end)
+
+    -- Toggle UI: default L; override with getgenv().ArcticUiHotkey = "Semicolon" etc. (Enum.KeyCode name)
+    UIConnect(UIS.InputBegan, function(input, gameProcessed)
+        if gameProcessed or not (Frame and ScreenGui and ScreenGui.Parent) then return end
+        if UIS:GetFocusedTextBox() then return end
+        local key = Enum.KeyCode.L
         pcall(function()
             local g = getgenv and getgenv() or nil
             local name = g and g.ArcticUiHotkey
@@ -198,32 +349,30 @@ function Start(A, B)
         end
     end)
 
+    if g then g.SUR_unload = UIDestroy end
     -- ── Helper: build a colour-tracking indicator tween loop ──
 end
 
 local function MakeIndicatorLoop(indicator, getFlagFn)
-    task.spawn(function()
-        local tweenInf = TweenInfo.new(0.2)
-        local lastState = nil
-        while ScreenGui and ScreenGui.Parent do
-            local state = not not getFlagFn()
-            if state ~= lastState then
-                lastState = state
-                local target = state and DefaultColor or Color3.fromRGB(10, 10, 13)
-                TweenServ:Create(indicator, tweenInf, {BackgroundColor3 = target}):Play()
-            end
-            task.wait(0.1)
-        end
-    end)
+    -- State changes paint directly; no coroutine per toggle survives deletion.
+    local function paint()
+        if UIClosed or not indicator.Parent then return end
+        indicator.BackgroundColor3 = getFlagFn() and DefaultColor or Color3.fromRGB(10, 10, 13)
+    end
+    paint()
+    return paint
 end
 
 -- ── Public API functions ──────────────────────────────────
 
 -- Destroy an element inside the GUI by name (case-insensitive)
-function Destroy(Name)
+local function Destroy(Name)
+    if UIClosed or not ScreenGui then return end
     local lower = string.lower(Name)
     for _, v in pairs(ScreenGui:GetDescendants()) do
         if string.lower(v.Name) == lower then
+            UIForget(v)
+            for _, child in ipairs(v:GetDescendants()) do UIForget(child) end
             v:Destroy()
             return
         end
@@ -231,14 +380,15 @@ function Destroy(Name)
 end
 
 -- FIX: main script calls Delete() but lib only defined Destroy() — alias added
-function Delete(Name)
+local function Delete(Name)
     Destroy(Name)
 end
 
 -- FIX: EditString was called in main script but never defined in lib.
 -- Finds a Note element by its current name and renames both the container
 -- and the inner TextLabel text so the display updates correctly.
-function EditString(OldText, NewText)
+local function EditString(OldText, NewText)
+    if UIClosed or not ScreenGui then return end
     for _, v in pairs(ScreenGui:GetDescendants()) do
         if v.Name == OldText then
             v.Name = NewText
@@ -254,7 +404,9 @@ end
 
 -- FIX: Fill() was called in main script (Teleport TextBoxes) but never defined.
 -- Returns the full player name matching the given partial prefix (case-insensitive).
-function Fill(Partial)
+local function Fill(Partial)
+    Partial = tostring(Partial or ""):match("^%s*(.-)%s*$")
+    if Partial == "" then return Partial end
     local lower = string.lower(Partial)
     for _, player in pairs(game:GetService("Players"):GetPlayers()) do
         if string.lower(player.Name):sub(1, #Partial) == lower then
@@ -264,7 +416,9 @@ function Fill(Partial)
     return Partial  -- fallback: return as-is
 end
 
-function CreateMenu(Name)
+local function CreateMenu(Name)
+    if UIClosed or not Menus or not Handler then return end
+    ToggleStates[Name] = ToggleStates[Name] or {}
     local ScrollingFrame = Instance.new("ScrollingFrame")
     local MenuList       = Instance.new("UIListLayout")
 
@@ -279,6 +433,8 @@ function CreateMenu(Name)
     ScrollingFrame.ScrollBarThickness = 0
     ScrollingFrame.Visible = false
     ScrollingFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    ScrollingFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+    ScrollingFrame.ScrollBarThickness = 4
 
     MenuList.Parent = ScrollingFrame
     MenuList.HorizontalAlignment = Enum.HorizontalAlignment.Center
@@ -314,7 +470,7 @@ function CreateMenu(Name)
         TextButton.BackgroundColor3 = DefaultColor
     end
 
-    TextButton.MouseButton1Down:Connect(function()
+    UIConnect(TextButton.MouseButton1Down, function()
         for _, v in pairs(Menus:GetChildren()) do
             if v:IsA("ScrollingFrame") then
                 v.Visible = (v.Name == TextButton.Text)
@@ -325,10 +481,12 @@ function CreateMenu(Name)
                 b.BackgroundColor3 = (b == TextButton and DefaultColor or Color3.fromRGB(17, 17, 17))
             end
         end
-    end)
+    end, TextButton)
+    return ScrollingFrame
 end
 
-function CreateButton(Name, MenuName, Callback)
+local function CreateButton(Name, MenuName, Callback)
+    if UIClosed or not Menus then return end
     local Regular  = Instance.new("TextButton")
     local Corner   = Instance.new("UICorner")
     local BtnLabel = Instance.new("TextLabel")
@@ -360,12 +518,14 @@ function CreateButton(Name, MenuName, Callback)
     BtnLabel.TextSize = 12.000
     BtnLabel.TextXAlignment = Enum.TextXAlignment.Left
 
-    Regular.MouseButton1Down:Connect(function()
-        pcall(Callback)
-    end)
+    UIConnect(Regular.MouseButton1Down, function()
+        UICall(Callback)
+    end, Regular)
+    return Regular
 end
 
-function CreateTextBox(Name, MenuName, Options, Callback)
+local function CreateTextBox(Name, MenuName, Options, Callback)
+    if UIClosed or not Menus then return end
     Options = Options or {}
 
     local Container = Instance.new("TextButton")
@@ -419,21 +579,23 @@ function CreateTextBox(Name, MenuName, Options, Callback)
 
     -- FIX: was table.find(C, "AutoUpdate") which searches array values,
     -- not dict keys — correct check is Options["AutoUpdate"]
-    InputBox.FocusLost:Connect(function(enterPressed)
-        pcall(Callback, InputBox.Text)
-    end)
+    UIConnect(InputBox.FocusLost, function(enterPressed)
+        UICall(Callback, InputBox.Text)
+    end, Container)
     if Options["AutoUpdate"] then
-        InputBox:GetPropertyChangedSignal("Text"):Connect(function()
-            pcall(Callback, InputBox.Text)
-        end)
+        UIConnect(InputBox:GetPropertyChangedSignal("Text"), function()
+            UICall(Callback, InputBox.Text)
+        end, Container)
     else
-        Container.MouseButton1Down:Connect(function()
-            pcall(Callback, InputBox.Text)
-        end)
+        UIConnect(Container.MouseButton1Down, function()
+            UICall(Callback, InputBox.Text)
+        end, Container)
     end
+    return Container
 end
 
-function CreateToggle(Name, MenuName, Callback)
+local function CreateToggle(Name, MenuName, Callback)
+    if UIClosed or not Menus then return end
     local ToggleBtn   = Instance.new("TextButton")
     local CornerA     = Instance.new("UICorner")
     local ToggleLabel = Instance.new("TextLabel")
@@ -475,18 +637,27 @@ function CreateToggle(Name, MenuName, Callback)
     CornerB.CornerRadius = UDim.new(0, 2)
     CornerB.Parent = Indicator
 
-    local IsOn = false
+    local state = { value = false, owner = ToggleBtn }
+    ToggleStates[MenuName] = ToggleStates[MenuName] or {}
+    ToggleStates[MenuName][Name] = state
     -- FIX: was an always-running loop that tweened every task.wait() frame.
-    -- Now uses a shared helper that polls at 0.1s intervals — much less wasteful.
-    MakeIndicatorLoop(Indicator, function() return IsOn end)
+    -- Direct painting keeps the indicator in sync with automatic stops.
+    state.paint = MakeIndicatorLoop(Indicator, function() return state.value end)
 
-    ToggleBtn.MouseButton1Down:Connect(function()
-        IsOn = not IsOn
-        pcall(Callback)
-    end)
+    UIConnect(ToggleBtn.MouseButton1Down, function()
+        local requested = not state.value
+        local ok, actual = UICall(Callback, requested)
+        if ok then
+            local value = requested
+            if type(actual) == "boolean" then value = actual end
+            SetToggle(Name, MenuName, value)
+        end
+    end, ToggleBtn)
+    return ToggleBtn
 end
 
-function CreateNote(Text, MenuName)
+local function CreateNote(Text, MenuName)
+    if UIClosed or not Menus then return end
     local UseScaled = string.len(Text) >= 42
 
     local Container  = Instance.new("TextLabel")
@@ -520,9 +691,11 @@ function CreateNote(Text, MenuName)
 
     NoteCorner.CornerRadius = UDim.new(0, 2)
     NoteCorner.Parent = Container
+    return Container
 end
 
-function CreateTextBoxToggle(Name, MenuName, Options, Callback)
+local function CreateTextBoxToggle(Name, MenuName, Options, Callback)
+    if UIClosed or not Menus then return end
     Options = Options or {}
 
     local Container = Instance.new("TextButton")
@@ -583,26 +756,41 @@ function CreateTextBoxToggle(Name, MenuName, Options, Callback)
     CornerC.CornerRadius = UDim.new(0, 2)
     CornerC.Parent = Indicator
 
-    local IsOn = false
-    MakeIndicatorLoop(Indicator, function() return IsOn end)
+    local state = { value = false, owner = Container }
+    ToggleStates[MenuName] = ToggleStates[MenuName] or {}
+    ToggleStates[MenuName][Name] = state
+    state.paint = MakeIndicatorLoop(Indicator, function() return state.value end)
 
     -- FIX: was table.find(C, "AutoUpdate") — wrong for dict tables.
     if Options["AutoUpdate"] then
-        Container.MouseButton1Down:Connect(function()
-            IsOn = not IsOn
-        end)
-        InputBox:GetPropertyChangedSignal("Text"):Connect(function()
-            pcall(Callback, InputBox.Text)
-        end)
+        UIConnect(Container.MouseButton1Down, function()
+            local requested = not state.value
+            local ok, actual = UICall(Callback, InputBox.Text, requested)
+            if ok then
+                local value = requested
+                if type(actual) == "boolean" then value = actual end
+                SetToggle(Name, MenuName, value)
+            end
+        end, Container)
+        UIConnect(InputBox:GetPropertyChangedSignal("Text"), function()
+            UICall(Callback, InputBox.Text)
+        end, Container)
     else
-        Container.MouseButton1Down:Connect(function()
-            IsOn = not IsOn
-            pcall(Callback, InputBox.Text)
-        end)
+        UIConnect(Container.MouseButton1Down, function()
+            local requested = not state.value
+            local ok, actual = UICall(Callback, InputBox.Text, requested)
+            if ok then
+                local value = requested
+                if type(actual) == "boolean" then value = actual end
+                SetToggle(Name, MenuName, value)
+            end
+        end, Container)
     end
+    return Container
 end
 
-function CreateSearchBar(MenuName)
+local function CreateSearchBar(MenuName)
+    if UIClosed or not Menus then return end
     local SearchBar  = Instance.new("TextLabel")
     local CornerA    = Instance.new("UICorner")
     local SearchLbl  = Instance.new("TextLabel")
@@ -652,7 +840,7 @@ function CreateSearchBar(MenuName)
     -- FIX: original code created a fake LocalScript via Instance.new('LocalScript')
     -- which is completely non-functional in an executor (scripts can't run that way).
     -- Replaced with a direct signal connection that actually works.
-    SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    UIConnect(SearchBox:GetPropertyChangedSignal("Text"), function()
         local query      = string.lower(SearchBox.Text)
         local targetMenu = Menus[MenuName]
         if not targetMenu then return end
@@ -668,10 +856,12 @@ function CreateSearchBar(MenuName)
                 end
             end
         end
-    end)
+    end, SearchBar)
+    return SearchBar
 end
 
-function CreateNotification(Title, Text, Options)
+local function CreateNotification(Title, Text, Options)
+    if UIClosed then return end
     local Sound    = "rbxassetid://4835664238"
     local Duration = 5
 
