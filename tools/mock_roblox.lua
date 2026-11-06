@@ -425,6 +425,8 @@ end
 -- ── runner ────────────────────────────────────────────────────────────────
 function M.run(src, clickAll)
     local game, workspace, lp = build()
+    M.workspace = workspace   -- for targeted tests
+    M.env = nil               -- filled in once the sandbox env exists
 
     local errors = {}
 
@@ -510,6 +512,8 @@ function M.run(src, clickAll)
         end,
     }, { __index = REAL })
 
+    M.env = env
+
     local chunk, err = load(src, "SUR", "t", env)
     if not chunk then return false, err, errors end
 
@@ -542,5 +546,8 @@ function M.run(src, clickAll)
 
     return true, nil, errors
 end
+
+-- exported so targeted tests can build their own NPCs inside Workspace.Living
+M.newInstance = newInstance
 
 return M

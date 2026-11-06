@@ -992,22 +992,55 @@ local function jitter(min, max)
     return min + math.random() * (max - min)
 end
 
--- Поиск босса в Living: сначала каноническое имя "Boss", потом любой живой
--- Humanoid, который не является игроком. message.txt верил только в "Boss".
-local function findLairBoss()
+-- Поиск лейр-босса в Living.
+-- ВАЖНО: только босс. Раньше здесь стоял фолбэк «любой живой Humanoid, не
+-- игрок» — из-за него фарм перебирал и убивал ВСЕХ NPC в Living подряд.
+--
+-- Три ступени, от точной к эвристике:
+--   1) имя ровно "Boss"  — так было в оригинальном message.txt;
+--   2) имя содержит "boss";
+--   3) объект, которого НЕ БЫЛО в Living до вызова Done — то есть только что
+--      заспавненный. Это ловит босса с любым именем и никогда не хватает
+--      старого NPC, потому что baseline снимается перед спавном.
+local function snapshotLiving()
+    local set = {}
+    local L = living()
+    if L then
+        for _, m in ipairs(L:GetChildren()) do set[m] = true end
+    end
+    return set
+end
+
+local function findLairBoss(baseline)
     local L = living()
     if not L then return nil end
 
-    local b = L:FindFirstChild("Boss")
-    if b then return b end
-
-    for _, m in ipairs(L:GetChildren()) do
+    local function alive(m)
         local h = m:FindFirstChildOfClass("Humanoid")
         local r = m:FindFirstChild("HumanoidRootPart")
-        if h and r and h.Health > 0 and not Players:GetPlayerFromCharacter(m) then
+        return h and r and h.Health > 0
+    end
+
+    -- 1. каноническое имя
+    local b = L:FindFirstChild("Boss")
+    if b and alive(b) then return b end
+
+    -- 2. имя содержит "boss"
+    for _, m in ipairs(L:GetChildren()) do
+        if string.find(string.lower(m.Name), "boss", 1, true) and alive(m) then
             return m
         end
     end
+
+    -- 3. только то, что появилось после спавна
+    if baseline then
+        for _, m in ipairs(L:GetChildren()) do
+            if not baseline[m] and alive(m) and not Players:GetPlayerFromCharacter(m) then
+                return m
+            end
+        end
+    end
+
     return nil
 end
 
@@ -1521,21 +1554,39 @@ local function startLairFarm()
                 break
             end
 
-            -- 1. дёргаем Done, пока не появится босс (троттлинг внутри TriggerLair)
+            -- 1. дёргаем Done, пока не появится босс (троттлинг внутри TriggerLair).
+            -- baseline снимаем ДО первого Done: всё, что появится после, — босс.
+            local baseline = snapshotLiving()
             local t0 = os.clock()
-            while StartLairFarming and not findLairBoss() and os.clock() - t0 < 40 do
+            local warned = false
+
+            while StartLairFarming and not findLairBoss(baseline) and os.clock() - t0 < 40 do
                 TriggerLair()
                 task.wait(jitter(0.9, 1.5))
+
+                -- диагностика: если долго нет босса — один раз показать, что в Living
+                if not warned and os.clock() - t0 > 12 then
+                    warned = true
+                    local L = living()
+                    local names = {}
+                    if L then
+                        for _, m in ipairs(L:GetChildren()) do
+                            if m:FindFirstChildOfClass("Humanoid") then
+                                names[#names + 1] = m.Name
+                            end
+                        end
+                    end
+                    notify("Lair: boss not found. Living = "
+                        .. (#names > 0 and table.concat(names, ", ") or "empty"), 8)
+                end
             end
             if not StartLairFarming then break end
 
             if ShortPause then task.wait(PauseTimer) end
 
             -- 2. бой. Позиция — ДО атаки, иначе босс успевает отойти.
-            while StartLairFarming do
-                local boss = findLairBoss()
-                if not boss then break end
-
+            local boss = findLairBoss(baseline)
+            while StartLairFarming and boss do
                 pcall(function()
                     holdPosition(boss, LairDistance, Underneath)
                     if InstantBossKill then killTarget(boss) end
@@ -1543,6 +1594,11 @@ local function startLairFarm()
                 end)
 
                 task.wait(jitter(STEALTH.AttackMin, STEALTH.AttackMax))
+
+                -- держим ТОГО ЖЕ босса, пока жив. Не ищем нового на каждом тике:
+                -- иначе после его смерти цикл перескакивает на следующего NPC.
+                local h = boss:FindFirstChildOfClass("Humanoid")
+                if not boss.Parent or not h or h.Health <= 0 then break end
             end
 
             if ShortPause then task.wait(PauseTimer) end
