@@ -1061,9 +1061,13 @@ CreateToggle("Begin Quest Farm", "Quest Farm", function()
 
                         local p = hrp()
                         if p then
+                            -- FIX: второй CFrame читал УЖЕ изменённую позицию,
+                            -- поэтому персонаж улетал на +1010 студов и падал.
+                            -- Теперь база запоминается до первого прыжка.
+                            local base = p.Position
                             pcall(function()
-                                p.CFrame = CFrame.new(p.Position + Vector3.new(0, 0, 1000))
-                                p.CFrame = CFrame.new(p.Position + Vector3.new(0, 10, 0))
+                                p.CFrame = CFrame.new(base + Vector3.new(0, 0, 1000))
+                                p.CFrame = CFrame.new(base + Vector3.new(0, 10, 0))
                             end)
                         end
                     end
