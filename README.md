@@ -1,125 +1,41 @@
 # Arctic SUR
 
-Скрипт для **Stand Upright: Rebooted** (place `8540168650`), переписанный с нуля
-по живому дереву игры, а не по догадкам.
+Скрипт для **Stand Upright: Rebooted** (place `8540168650`).
 
 > [!IMPORTANT]
-> Предыдущие версии (`message.txt`, `merged_script_fixed.lua`, `SUR_Arctic_Main.lua`)
-> **мертвы в боевой части**: после обновления игра убрала ремоуты
-> `StandEvents.Summon`, `StandEvents.M1`, `StandEvents.Barrage` и т.д.
-> Этот скрипт работает на новом протоколе `StandEvents.Input`.
+> **Главный файл — [`SUR_Message.lua`](SUR_Message.lua).**
+> Это исходный `message.txt` (тот самый Arctic с Discord-ссылкой и Polarrr#1912),
+> переведённый на текущий протокол игры. Меню и кнопки не менялись — починена
+> только начинка. Полная таблица правок: [`docs/MESSAGE_FIXES.md`](docs/MESSAGE_FIXES.md).
 
 ---
 
 ## Быстрый старт
 
 1. Открой Roblox → Stand Upright.
-2. Инжектни любой executor (Xeno / Solara).
-3. Вставь содержимое [`SUR_Arctic_v2.lua`](SUR_Arctic_v2.lua) и запусти.
+2. Инжектни executor (Xeno / Solara).
+3. Вставь содержимое [`SUR_Message.lua`](SUR_Message.lua) и запусти.
 4. Меню — по клавише **J**. Перетаскивание — за шапку.
 
 Один файл, библиотека внутри, никаких `loadstring(HttpGet(...))` — интернет
-для запуска не нужен.
+для запуска не нужен (старая ссылка на `icebear.lol` мертва).
 
 ---
 
-## Меню
+## Меню (как в message.txt, один в один)
 
 | Меню | Что внутри |
 |---|---|
-| **Home** | снапшот игрока, запуск полного аудита ×20 |
-| **Combat** | Auto Attack, Auto Barrage, Auto Heavy, все мувы по кнопке |
-| **NPC & Quest** | `Done` / `QuestDone` на любом NPC, на всех сразу, авто-луп |
-| **Shop** | скупка кетчупа, Auto Sell, **Stock Market списком** (`SM_Event`) |
-| **Stand** | слоты 1–5, SpecSlot2, тир, стрелы и рокакаки |
-| **Stand Farm** | луп роллов, вайтлисты стендов и атрибутов, авто-покупка, вебхук |
-| **Items** | предметы в мире, точки спавна, авто-подбор, TP к спавнам |
-| **Item Farm** | Instant / Legit, скан всех грабящихся Tool, `fireproximityprompt` + hold, проверка факта подбора |
-| **Teleports** | 14 именованных локаций + 3 Dark Entrance + **все NPC по их именам из игры** |
-| **Boss Farm** | 8 пресетов + **Scan live targets** (список из `Workspace.Living`) |
-| **Quest Farm** | **Pick quest NPC** (список 68 NPC), gap, QuestDone/Done |
-| **Lair Farm** | **полный AUTO: сам находит лейр-босса → NPC квеста → враждебного моба** |
-| **Farm Settings** | Refresh Movesets, Use Custom Moves, список тяжёлых клавиш |
-| **Player** | Speed, Jump, Fly (WASD), Noclip |
-| **LocalPlayer** | Open Stand Storage, Anti AFK, Auto Umbrella, Reset |
-| **Visuals** | ESP на игроков/мобов и NPC |
-| **Fake** | фейк-стенд, атрибут, статы, `/check` |
-| **Diagnostics** | проверка ремоутов, персонажа, мира |
-
-> [!TIP]
-> Ничего не нужно печатать руками: стенды, атрибуты, NPC, боссы и предметы
-> берутся списками из самой игры. Текстовые поля остались только там, где
-> значение числовое (дистанция, пауза, сумма).
-
----
-
-## Lair Farm — полностью автоматический
-
-Никакого «выбери NPC из списка и нажми старт». Один тоггл, дальше скрипт сам
-каждый цикл решает, что делать:
-
-```
-есть лейр-босс в радиусе?  ->  агрим его (M1 + тяжёлые)
-иначе есть NPC квеста?     ->  Done + QuestDone (троттлинг 1.5с)
-иначе есть враждебный моб? ->  агрим его
-иначе                      ->  ждём 0.5с и сканируем снова
-```
-
-Приоритет, радиус поиска, дистанция боя и пауза — три числовых поля, всё
-остальное берётся из мира. Статус пишется прямо в меню (`Status: ...`) и
-дублируется в F9.
-
-Ручные кнопки остались как переопределение: `Select lair NPC (nearest)`,
-`Pick lair NPC from list`, `Scan lair bosses`, `Fire LairStart` / `LairClear`.
-
----
-
-## Интерфейс
-
-Окно **720×470**, по центру экрана, тянется за шапку, закрывается крестиком,
-тоггл — **J**.
-
-- сайдбар 200 px, меню отсортированы по частоте использования
-  (Home → Combat → фармы → телепорты → остальное), скроллится;
-- строки 30 px, подпись слева на всю ширину, тоггл-пилюля прижата к правому
-  краю, текстовое поле — правая половина строки;
-- короткие `CreateNote` автоматически становятся акцентными заголовками
-  секций, длинные — приглушённым пояснением с переносом строк;
-- тёмная тема + фиолетовый акцент, тонкая обводка окна.
-
-Раскладка считается от размеров родителей, поэтому новые меню (списки стендов,
-атрибутов, NPC) стилизуются сами при создании. Если что-то поехало —
-**Diagnostics → Refresh UI layout**.
-
-
----
-
-## Item Farm — что было сломано
-
-Три реальных бага в старом блоке:
-
-1. **«Instant» ничего не делал.** Обе кнопки только переключали флаг, который
-   читался в одном месте — в `task.wait(legit and 2.5 or 0.6)`. Мгновенного
-   пути не существовало, и понять активный режим было нельзя.
-2. **`grabViaPrompt` всегда возвращал `true`.** `pcall(fireproximityprompt, ...)`
-   без проверки результата → ветка «нет промпта, прыгаем на маркер» не
-   выполнялась **никогда**. Плюс промпт не удерживался на его `HoldDuration`.
-3. **Двойной цикл.** Выключить и снова включить во время `task.wait` — и
-   крутились два лупа одновременно, оба видели `ItemFarm.on == true`.
-
-Как сейчас:
-
-- режим — настоящее состояние, кнопки пишут `instant mode` / `legit mode`;
-- `promptTrigger` честно возвращает результат и пробует **два** пути:
-  `fireproximityprompt` и `InputHoldBegin` → wait(HoldDuration) → `InputHoldEnd`;
-- успех = Tool **реально исчез из мира**, а не «вызов не упал»;
-- цель — **ближайшая** (скан сортируется по дистанции), скан кешируется на 0.5с;
-- цель, на которой попытка не сработала, блокируется на 5 секунд, чтобы луп
-  не залипал на одном предмете;
-- `ItemFarm.gen` — счётчик поколений: старый луп умирает сразу после старта
-  нового, дублей нет;
-- Instant берёт до 4 предметов за проход без паузы, Legit — один предмет с
-  человеческим разбросом 2.2–3.7с.
+| **Home** | Discord / контакт автора |
+| **LocalPlayer** | Open Stand Storage, стрелы, рокакаки, Auto Umbrella, Anti AFK |
+| **Shops** | Auto Sell Ketchup, Count, покупка 6 предметов на бирже |
+| **Farm Settings** | Refresh Movesets (реальные клавиши мувсета), Use Custom Moves |
+| **Boss Farm** | Distance, Underneath, три босса: Jotaro Over Heaven / Johnny Joestar / Jotaro Part 4 |
+| **Lair Farm** | Select Lair NPC, Distance, Underneath, Pause, **Instant Boss Kill (HP = 0)** |
+| **Quest Farm** | Select Quest NPC, Select NPC, Only Farm NPC, Distance, Underneath |
+| **Item Farm** | Instant / Legit, Start Farming |
+| **Teleports** | TP to player, TP above, 14 локаций, все NPC по именам из игры |
+| **Stand Farm** | Search, Stand/Attribute/Split check, выбор стрел, автопокупка, вебхук, списки стендов и атрибутов |
 
 ---
 
@@ -134,6 +50,9 @@ StandEvents.Input:FireServer({
     Type  = Enum.UserInputType.Keyboard
 })
 ```
+
+Старые `StandEvents.Summon` / `StandEvents.M1` / `StandEvents.<MoveName>`
+**удалены из игры** — именно поэтому message.txt не наносил ни одного удара.
 
 Список разрешённых клавиш отдаёт сама игра:
 
@@ -152,7 +71,7 @@ local moveset = StandEvents.Info:InvokeServer("Moveset")
 | R | Heavy Punch | 8 |
 | F | — | — |
 | T | Bearing Shots | 8 |
-| Y | **Timestop** | — (акк приходит, числа нет) |
+| Y | **Timestop** | — |
 | H | Timeskip | 6 |
 | X | Counter | 8 |
 | Z | — | — |
@@ -162,96 +81,57 @@ local moveset = StandEvents.Info:InvokeServer("Moveset")
 
 Пустые ячейки (M2/F/Z/J) — мув не назначен на этом стенде.
 
-### Проверка действий
+---
 
-Сервер сам подтверждает принятый мув:
+## Уязвимость: мгновенная смерть лейр-босса
 
 ```lua
-ReplicatedStorage.Events.CoolDownGUI.OnClientEvent:Connect(function(moveName, cooldown)
-    -- "Punch", 0.35
-end)
+Workspace.Living.Boss.Humanoid.Health = 0
 ```
 
-Скрипт использует это как критерий PASS в аудите: не «не упало», а
-«сервер ответил». Но акк присылают **не все** мувы — только M1, Q, E, R, H, Y, G, N.
-У X, T, Z, F, J акка нет, поэтому для них PASS — успешный `press()`.
+Клиент пишет Health напрямую, сервер принимает репликацию → босс умирает
+мгновенно, без боя. В `message.txt` строка стояла безусловно; в порте она
+вынесена в `killTarget()` (с `pcall` и фолбэком) и закрыта тогглом
+**Instant Boss Kill (HP = 0)** в меню Lair Farm — по умолчанию включён.
 
 ---
 
-## Fake — подмена профиля
+## Отличия от `message.txt`
 
-Всё, что печатает карточка `/check`, читается из объектов, которые клиент
-уже держит у себя:
+Полный разбор — [`docs/MESSAGE_FIXES.md`](docs/MESSAGE_FIXES.md). Коротко:
 
-```lua
-Player.Data.Stand / .Attri / .GUID
-Character.Stats.AttackDmg
-Character.DmgBoostAttri
-Humanoid.MaxHealth
-ReplicatedStorage.StandNameConvert[code].Value   -- pretty-имя
-```
+* библиотека встроена (старый CDN мёртв);
+* боевая часть переведена на `StandEvents.Input` — фармы снова бьют;
+* убраны захардкоженный ник `polar_eXDAVH`, чтение мёртвых `CDgui` / `MoveCD` / `Aura`;
+* починены опечатки `UseArrow` / `UseChargedArrow`, из-за которых автопокупка
+  стрел не срабатывала никогда;
+* все бесконечные `repeat ... until` получили таймауты;
+* циклы фармов вынесены из колбэков в `task.spawn`;
+* подписи-статусы ищутся по префиксу, а не по точному имени;
+* три копии одного цикла Boss Farm свёрнуты в одну функцию.
 
-Меню **Fake** подменяет эти пять полей и держит их циклом `0.2s`, чтобы сервер
-не откатил. OFF — восстанавливает снапшот.
-
-Список стендов и атрибутов **не надо вводить руками**:
-
-- **Open stand list** — строит меню `Fake: Stands` из `StandNameConvert`,
-  одна кнопка = один стенд.
-- **Open attribute list** — читает доску шансов
-  `Workspace.Map.ChancesBoards.AttributeChances`, одна кнопка = один атрибут.
-- **Open stand model list** — то же, но сразу ставит модель стенда.
-- **Read current from HUD** — печатает то, что показывает панель в игре.
-
-Плюс подмена самих `TextLabel` панели статов (`PlayerGui.PlayerGUI.ingame.Stats`):
-при включении снимается снапшот всех подписей, и те, что показывали реальные
-значения, начинают показывать фейк. При выключении — всё возвращается.
-
-**Fake stand model** клонирует модель стенда из `Workspace.Living.<ник>.Stand`,
-глушит скрипты, якорит парты, ставит рядом с HRP и каждый тик держит через
-`PivotTo` — стенд стоит и едет за игроком.
-
-> [!NOTE]
-> Подмена локальная: `/check` на своём клиенте показывает фейк, у других
-> игроков остаются серверные значения.
-
-
----
-
-## Аудит
-
-Кнопка **Home → Run Full Audit (x20)** или извне через `getgenv().ArcticAPI`.
-
-Каждая функция прогоняется 20 раз, между итерациями выдерживается реальный
-кулдаун мува. Полная таблица — в [`docs/AUDIT.md`](docs/AUDIT.md).
-
-Коротко:
-
-| Блок | Результат |
-|---|---|
-| `Q` Summon, `G` Block, `N` Quote | 20/20 |
-| `E` Barrage, `R` Heavy Punch | 19/20 (один сетевой таймаут) |
-| `M1` Punch | 17/20 — лимит комбо, не баг |
-| `X`, `Z`, `F`, `J` (press-only) | 20/20 |
-| данные, NPC, телепорты, ESP, speed/jump/fly/noclip | 20/20 |
+Добавлен ровно один элемент — тоггл **Instant Boss Kill (HP = 0)**.
 
 ---
 
 ## Структура репозитория
 
 ```
-SUR_Arctic_v2.lua     готовый однофайловый билд (это и запускать)
-lib/ArcticLib.lua     библиотека отдельно, если нужна сама по себе
-src/lib.lua           оригинальная библиотека (как была)
-src/lib_fixed.lua     она же, но с API на file scope (см. ниже)
-src/main.lua          логика скрипта
-src/build.py          сборка lib_fixed + main -> SUR_Arctic_v2.lua
-src/fix_lib.py        патч библиотеки
-tools/sur_agent.lua   мост в игру (для отладки через файлы)
-tools/sur_agent.py    драйвер моста
-tools/snippets/       разовые запросы к игре
-docs/FINDINGS.md      что вскрыто в игре и как
-docs/AUDIT.md         результаты прогонов
+SUR_Message.lua          ← ГЛАВНЫЙ ФАЙЛ (запускать этот)
+SUR_Message.txt          он же, для копипаста
+src/message_main.lua     логика порта (message.txt)
+src/build_message.py     сборка lib_fixed + message_main
+src/lib_fixed.lua        библиотека Arctic с API на file scope
+src/fix_lib.py           патч библиотеки
+tools/lua_syntax.py      реальная проверка синтаксиса (lupa / Lua VM)
+tools/luacheck_rough.py  быстрая проверка баланса блоков
+tools/mock_roblox.lua    фейковый Roblox для офлайн-прогона
+tools/mock_check.py      прогон скрипта в фейковом Roblox
+docs/MESSAGE_FIXES.md    таблица правок message.txt
+docs/AUDIT.md            результаты прогонов по 20 раз
+docs/FINDINGS.md         что вскрыто в игре и как
+
+SUR_Arctic_v2.lua        отдельная, более новая сборка (другое меню)
 ```
 
 ---
@@ -264,52 +144,27 @@ docs/AUDIT.md         результаты прогонов
 function Start(A, B)
     ...
     function CreateMenu(Name) ... end   -- локальная для Start!
-    function CreateButton(...) ... end
 end
 ```
 
 Снаружи `CreateMenu` был `nil`. Именно поэтому старые скрипты падали с
-`attempt to call a nil value` сразу после `Start()`. `src/fix_lib.py`
-выносит API на file scope, а `Start()` просто заполняет `ScreenGui`/`Menus`.
+`attempt to call a nil value` сразу после `Start()`. `src/fix_lib.py` выносит
+API на file scope, а `Start()` просто заполняет `ScreenGui` / `Menus`.
+Дополнительно: сайдбар получил `AutomaticCanvasSize` — иначе меню после
+десятого были недоступны, — и тёмную тему с фиолетовым акцентом.
 
 ---
 
 ## Сборка
 
 ```bash
-python src/fix_lib.py     # lib.lua -> lib_fixed.lua
-python src/build.py       # lib_fixed + main -> SUR_Arctic_v2.lua
+python src/build_message.py                      # SUR_Message.lua
+python tools/lua_syntax.py SUR_Message.lua       # реальный парсер
+python tools/luacheck_rough.py SUR_Message.lua   # баланс блоков
+python tools/mock_check.py SUR_Message.lua       # прогон в фейковом Roblox
 ```
 
----
+Мок-прогон поднимает фейковый Workspace/ReplicatedStorage/игрока, грузит скрипт
+целиком, строит всё меню и прожаёт **все 107 обработчиков** (кнопки, тогглы
+дважды, поля ввода). Ловит опечатки и nil-индексацию в UI-слое без запуска игры.
 
-## Отладка через мост
-
-Если нужно посмотреть игру изнутри:
-
-```bash
-python tools/sur_agent.py install     # кладёт агент в autoexec executor'а
-python tools/sur_agent.py status      # жив ли, какой place/job
-python tools/sur_agent.py probe       # стенд, статы, бэкпак
-python tools/sur_agent.py scan ReplicatedStorage 3
-python tools/sur_agent.py exec "return game.PlaceId"
-python tools/sur_agent.py exec -f tools/snippets/recon1.lua --timeout 300
-```
-
-Канал: `workspace/sur_cmd.json` → игра → `workspace/sur_res.json`.
-
----
-
-## API наружу
-
-`getgenv().ArcticAPI` — всё управляемое извне:
-
-```
-press moveset standName standAttri fire invoke fireNPC npcRemote allNPCs
-tpToNPC tpToPosition worldTools itemSpawns useTool audit ack ackReset ackWait
-mods esp refreshESP clearESP setSpeed setJump startFly stopFly startNoclip stopNoclip
-fake fakeStart fakeStop fakeApply fakeStandSpawn fakeStandClear
-standCatalog standPretty attriCatalog dataValue statsFolder
-farm farmStart farmStop farmStep landmarks
-makePicker restyle
-```

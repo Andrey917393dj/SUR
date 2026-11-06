@@ -81,16 +81,23 @@ def check(path):
         problems.append(f"unclosed {o} opened on line {ol}")
 
     # block keywords
-    words = re.findall(r"\b(function|if|for|while|do|repeat|until|end|then|else|elseif)\b", clean)
+    # `do` closes nothing on its own, but a BARE `do ... end` block does open
+    # one. Track whether the `do` belongs to a `for`/`while` header; if it
+    # does not, it counts as an opener.
     depth = 0
-    kw_line = 1
+    pending_do = 0
     for m in re.finditer(r"\b(function|if|for|while|do|repeat|until|end)\b", clean):
         w = m.group(1)
         kw_line = clean.count("\n", 0, m.start()) + 1
         if w in ("function", "if", "for", "while", "repeat"):
             depth += 1
+            if w in ("for", "while"):
+                pending_do += 1
         elif w == "do":
-            pass
+            if pending_do > 0:
+                pending_do -= 1
+            else:
+                depth += 1
         elif w in ("end", "until"):
             depth -= 1
             if depth < 0:
