@@ -208,18 +208,10 @@ def main():
         return exec_code(f"return SUR_AGENT.find({json.dumps(frag)}, {json.dumps(root)}, {lim})")
     if cmd == "exec":
         args = sys.argv[2:]
-        timeout = 300
-        if "--timeout" in args:
-            i = args.index("--timeout")
-            try:
-                timeout = int(args[i + 1])
-            except Exception:
-                pass
-            args = args[:i] + args[i + 2:]
         if args and args[0] == "-f":
             with open(args[1], "r", encoding="utf-8") as f:
-                return exec_code(f.read(), timeout=timeout)
-        return exec_code(" ".join(args), timeout=timeout)
+                return exec_code(f.read())
+        return exec_code(" ".join(args))
     if cmd == "scan":
         root = sys.argv[2] if len(sys.argv) > 2 else "ReplicatedStorage"
         depth = sys.argv[3] if len(sys.argv) > 3 else "3"

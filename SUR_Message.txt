@@ -907,12 +907,39 @@ local function summonIfNeeded()
     press(Enum.KeyCode.Q, 0.1)
 end
 
--- УЯЗВИМОСТЬ: прямое присваивание Health на клиенте убивает лейр-босса.
--- Оставлено как было в message.txt, но в pcall и с фолбэком.
+-- ══════════════════════════════════════════════════════════════════════════
+-- STEALTH LAYER
+-- Античит здесь СЕРВЕРНЫЙ (в клиентском дампе его нет). Он реагирует не на
+-- сам факт скрипта, а на пакетный паттерн: CFrame-записи 7 раз в секунду,
+-- нулевая скорость каждый тик, дёрганье RemoteEvent без задержки.
+-- Всё ниже — про то, чтобы паттерн перестал быть похож на бота.
+-- ══════════════════════════════════════════════════════════════════════════
+local STEALTH = {
+    RepositionGap  = 0.85,   -- мин. пауза между записями CFrame
+    RepositionDist = 12,     -- ближе — вообще не двигаемся
+    UnderDepth     = 3,      -- максимум, на сколько закапываемся под босса
+    TriggerMin     = 2.6,    -- рандомный интервал дёрганья Done
+    TriggerMax     = 4.4,
+    AttackMin      = 0.22,   -- рандомный интервал M1
+    AttackMax      = 0.38,
+    SessionMaxMin  = 25,     -- авто-стоп сессии
+}
+
+local lastReposition = 0
+local lastTriggerAt  = 0
+local nextTriggerAt  = 0
+local sessionStart   = 0
+
+-- ЯДРО ЭКСПЛОЙТА. Пишем Health=0 с клиента — это и есть пакет, который
+-- сервер видит как «Auto Lair Farm». Держим в pcall, с кулдауном и фолбэком.
+local lastKillAt = 0
 local function killTarget(model)
     if not model then return false end
     local h = model:FindFirstChildOfClass("Humanoid")
     if not h then return false end
+    if os.clock() - lastKillAt < 0.35 then return false end
+    lastKillAt = os.clock()
+
     pcall(function() h.Health = 0 end)                     -- ← ядро эксплойта
     if h.Health and h.Health > 0 then
         pcall(function() h:TakeDamage((h.MaxHealth or 100) * 100) end)
@@ -921,17 +948,67 @@ local function killTarget(model)
     return (h.Health == 0)
 end
 
+-- Позиционирование. Главное отличие от message.txt: двигаемся ТОЛЬКО когда
+-- реально отъехали, не чаще раза в 0.85с, и НЕ трогаем AssemblyLinearVelocity
+-- (нулевая скорость каждый тик — самый тупой детект из возможных).
+-- Закапываемся максимум на UnderDepth, иначе проваливаемся под пол карты.
 local function holdPosition(model, distance, underneath)
     local p = hrp()
     if not (model and p) then return end
     local t = model:FindFirstChild("HumanoidRootPart")
     if not t then return end
+
+    local want
     if underneath then
-        p.CFrame = t.CFrame * CFrame.new(0, -distance, distance)
+        local depth = math.min(tonumber(distance) or 4, STEALTH.UnderDepth)
+        want = CFrame.new(t.Position + Vector3.new(0, -depth, distance))
     else
-        p.CFrame = t.CFrame * CFrame.new(0, 0, distance)
+        want = CFrame.new(t.Position + Vector3.new(0, 0, distance))
     end
-    pcall(function() p.AssemblyLinearVelocity = Vector3.new(0, 0, 0) end)
+
+    if (p.Position - want.Position).Magnitude < STEALTH.RepositionDist then return end
+    if os.clock() - lastReposition < STEALTH.RepositionGap then return end
+
+    lastReposition = os.clock()
+    pcall(function() p.CFrame = want end)
+end
+
+-- Мягкий догон для дальних целей: одна перестановка на 1.2с, без цикла.
+local lastApproach = 0
+local function approach(model, distance)
+    local p = hrp()
+    if not (model and p) then return end
+    local t = model:FindFirstChild("HumanoidRootPart")
+    if not t then return end
+    if (p.Position - t.Position).Magnitude <= distance then return true end
+    if os.clock() - lastApproach < 1.2 then return false end
+    lastApproach = os.clock()
+    pcall(function() p.CFrame = CFrame.new(t.Position + Vector3.new(0, 0, distance)) end)
+    return true
+end
+
+-- Рандомный разброс таймингов: ровный шаг — это подпись бота.
+local function jitter(min, max)
+    return min + math.random() * (max - min)
+end
+
+-- Поиск босса в Living: сначала каноническое имя "Boss", потом любой живой
+-- Humanoid, который не является игроком. message.txt верил только в "Boss".
+local function findLairBoss()
+    local L = living()
+    if not L then return nil end
+
+    local b = L:FindFirstChild("Boss")
+    if b then return b end
+
+    for _, m in ipairs(L:GetChildren()) do
+        local h = m:FindFirstChildOfClass("Humanoid")
+        local r = m:FindFirstChild("HumanoidRootPart")
+        if h and r and h.Health > 0 and not Players:GetPlayerFromCharacter(m) then
+            return m
+        end
+    end
+    return nil
 end
 
 -- ── настройки фармов (общие, как в оригинале) ─────────────────────────────
@@ -1292,10 +1369,10 @@ local function bossFarm(modelName, label)
 
                 while BossOn[modelName] and boss and boss.Parent do
                     pcall(function()
-                        attackStep()
                         holdPosition(boss, BossDistance, BossUnderneath)
+                        attackStep()
                     end)
-                    task.wait(0.2)
+                    task.wait(jitter(STEALTH.AttackMin, STEALTH.AttackMax))
                 end
 
                 if BossOn[modelName] then task.wait(0.5) end
@@ -1326,19 +1403,32 @@ CreateButton("Select Lair NPC", "Lair Farm", function()
     local nf = npcFolder()
     if not (c and p and nf) then return end
 
+    -- БЛИЖАЙШИЙ, а не последний в списке (в оригинале перебор оставлял
+    -- случайного NPC, если рядом стояло двое).
+    local best, bestDist = nil, 15
     for _, v in ipairs(nf:GetChildren()) do
         local root = v:FindFirstChild("HumanoidRootPart")
-        if root and (p.Position - root.Position).Magnitude < 15 then
-            local head = v:FindFirstChild("Head")
-            local main = head and head:FindFirstChild("Main")
-            local txt = main and main:FindFirstChild("Text")
-            local pretty = (txt and txt.Text) or v.Name
-
-            SelectedLairNPC = v
-            SelectedLairNPCText = pretty
-            setNote("Selected Lair NPC:", "Selected Lair NPC: " .. pretty)
-            notify("Lair NPC: " .. pretty, 3)
+        if root then
+            local d = (p.Position - root.Position).Magnitude
+            if d < bestDist then best, bestDist = v, d end
         end
+    end
+    if not best then
+        notify("No Lair NPC within 15 studs", 4)
+        return
+    end
+
+    do
+        local v = best
+        local head = v:FindFirstChild("Head")
+        local main = head and head:FindFirstChild("Main")
+        local txt = main and main:FindFirstChild("Text")
+        local pretty = (txt and txt.Text) or v.Name
+
+        SelectedLairNPC = v
+        SelectedLairNPCText = pretty
+        setNote("Selected Lair NPC:", "Selected Lair NPC: " .. pretty)
+        notify("Lair NPC: " .. pretty, 3)
     end
 end)
 
@@ -1355,24 +1445,45 @@ CreateToggle("Underneath", "Lair Farm", function()
 end)
 
 -- ЯДРО ЭКСПЛОЙТА: HP босса выставляется в 0 с клиента.
-local InstantBossKill = true
+-- По умолчанию ВЫКЛЮЧЕН: именно этот пакет сервер ловит как
+-- "Exploit Detected: Auto Lair Farm (267)". Включай осознанно.
+local InstantBossKill = false
+CreateNote("Instant Kill = HP write = kick 267. Off by default.", "Lair Farm")
 CreateToggle("Instant Boss Kill (HP = 0)", "Lair Farm", function()
     InstantBossKill = not InstantBossKill
-    notify("instant kill " .. (InstantBossKill and "on" or "off"), 3)
+    notify("instant kill " .. (InstantBossKill and "ON" or "off"), 3)
 end)
 
-function TriggerLair()
+-- Дёрганье Done. В message.txt летело каждые 0.6с без проверки дистанции —
+-- ровный метроном, по которому сервер и считает бота. Теперь: только рядом
+-- с NPC, только раз в 2.6–4.4с, и с перестановкой, если отбежали.
+function TriggerLair(force)
     if not SelectedLairNPC or not SelectedLairNPC.Parent then
         notify("Error Grabbing Remote 2", 3)
         return false
     end
+
     local done = SelectedLairNPC:FindFirstChild("Done")
-    if done and done:IsA("RemoteEvent") then
-        pcall(function() done:FireServer() end)
-        return true
+    if not (done and done:IsA("RemoteEvent")) then
+        notify("Error Grabbing Remote 2", 3)
+        return false
     end
-    notify("Error Grabbing Remote 2", 3)
-    return false
+
+    local root = SelectedLairNPC:FindFirstChild("HumanoidRootPart")
+    local p = hrp()
+    if root and p and (p.Position - root.Position).Magnitude > 25 then
+        approach(SelectedLairNPC, 6)
+        return false
+    end
+
+    if not force then
+        if os.clock() < nextTriggerAt then return false end
+        nextTriggerAt = os.clock() + jitter(STEALTH.TriggerMin, STEALTH.TriggerMax)
+    end
+    lastTriggerAt = os.clock()
+
+    pcall(function() done:FireServer() end)
+    return true
 end
 
 local ShortPause = false
@@ -1397,35 +1508,44 @@ CreateToggle("Begin Lair Farm", "Lair Farm", function()
         return
     end
 
+    sessionStart = os.clock()
+    nextTriggerAt = 0
+
     task.spawn(function()
         while StartLairFarming do
-            -- 1. дёргаем Done, пока не появится босс (с таймаутом, иначе вечный цикл)
+            -- авто-стоп: бесконечная сессия — тоже сигнатура бота
+            if os.clock() - sessionStart > STEALTH.SessionMaxMin * 60 then
+                StartLairFarming = false
+                notify("Lair Farm: session limit reached, stopped.", 6)
+                break
+            end
+
+            -- 1. дёргаем Done, пока не появится босс (троттлинг внутри TriggerLair)
             local t0 = os.clock()
-            local L = living()
-            while StartLairFarming and L and not L:FindFirstChild("Boss") and os.clock() - t0 < 25 do
+            while StartLairFarming and not findLairBoss() and os.clock() - t0 < 40 do
                 TriggerLair()
-                task.wait(0.6)
-                L = living()
+                task.wait(jitter(0.9, 1.5))
             end
             if not StartLairFarming then break end
 
             if ShortPause then task.wait(PauseTimer) end
 
-            -- 2. бой
+            -- 2. бой. Позиция — ДО атаки, иначе босс успевает отойти.
             while StartLairFarming do
-                local boss = L and L:FindFirstChild("Boss")
+                local boss = findLairBoss()
                 if not boss then break end
+
                 pcall(function()
-                    attackStep()
-                    if InstantBossKill then killTarget(boss) end
                     holdPosition(boss, LairDistance, Underneath)
+                    if InstantBossKill then killTarget(boss) end
+                    attackStep()
                 end)
-                task.wait(0.15)
-                L = living()
+
+                task.wait(jitter(STEALTH.AttackMin, STEALTH.AttackMax))
             end
 
             if ShortPause then task.wait(PauseTimer) end
-            task.wait(0.3)
+            task.wait(jitter(0.4, 0.9))
         end
     end)
 end)
@@ -1452,19 +1572,30 @@ CreateButton("Select Quest NPC", "Quest Farm", function()
     local nf = npcFolder()
     if not (c and p and nf) then return end
 
+    local best, bestDist = nil, 15
     for _, v in ipairs(nf:GetChildren()) do
         local root = v:FindFirstChild("HumanoidRootPart")
-        if root and (p.Position - root.Position).Magnitude < 15 then
-            local head = v:FindFirstChild("Head")
-            local main = head and head:FindFirstChild("Main")
-            local txt = main and main:FindFirstChild("Text")
-            local pretty = (txt and txt.Text) or v.Name
-
-            SelectedQuestNPC = v
-            SelectedQuestNPCText = pretty
-            setNote("Selected Quest NPC:", "Selected Quest NPC: " .. pretty)
-            notify("Quest NPC: " .. pretty, 3)
+        if root then
+            local d = (p.Position - root.Position).Magnitude
+            if d < bestDist then best, bestDist = v, d end
         end
+    end
+    if not best then
+        notify("No Quest NPC within 15 studs", 4)
+        return
+    end
+
+    do
+        local v = best
+        local head = v:FindFirstChild("Head")
+        local main = head and head:FindFirstChild("Main")
+        local txt = main and main:FindFirstChild("Text")
+        local pretty = (txt and txt.Text) or v.Name
+
+        SelectedQuestNPC = v
+        SelectedQuestNPCText = pretty
+        setNote("Selected Quest NPC:", "Selected Quest NPC: " .. pretty)
+        notify("Quest NPC: " .. pretty, 3)
     end
 end)
 
@@ -1473,14 +1604,22 @@ CreateButton("Select NPC", "Quest Farm", function()
     local L = living()
     if not (c and p and L) then return end
 
+    local best, bestDist = nil, 15
     for _, v in ipairs(L:GetChildren()) do
         local root = v:FindFirstChild("HumanoidRootPart")
-        if root and v:FindFirstChild("AI") and (p.Position - root.Position).Magnitude < 15 then
-            SelectedNPC = v.Name
-            setNote("Selected NPC:", "Selected NPC: " .. v.Name)
-            notify("Target NPC: " .. v.Name, 3)
+        if root and v:FindFirstChild("AI") then
+            local d = (p.Position - root.Position).Magnitude
+            if d < bestDist then best, bestDist = v, d end
         end
     end
+    if not best then
+        notify("No NPC within 15 studs", 4)
+        return
+    end
+
+    SelectedNPC = best.Name
+    setNote("Selected NPC:", "Selected NPC: " .. best.Name)
+    notify("Target NPC: " .. best.Name, 3)
 end)
 
 local OnlyFarmNPC = false
@@ -1551,10 +1690,10 @@ CreateToggle("Begin Quest Farm", "Quest Farm", function()
                         -- FIX: внутренние циклы больше не затеняют target
                         while StartQuestFarming and target.Parent and th.Health > 0 do
                             pcall(function()
-                                attackStep()
                                 holdPosition(target, QuestDistance, QUnderneath)
+                                attackStep()
                             end)
-                            task.wait(0.15)
+                            task.wait(jitter(STEALTH.AttackMin, STEALTH.AttackMax))
                         end
 
                         if not OnlyFarmNPC then TriggerQuest() end
